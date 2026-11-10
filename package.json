@@ -1,0 +1,59 @@
+{
+  "name": "free-overlay",
+  "version": "1.0.0",
+  "description": "Free Overlay — transparent telemetry standings HUD for iRacing",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build && electron-builder",
+    "build:win": "tsc && vite build && electron-builder --win --x64",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "iracing",
+    "telemetry",
+    "overlay",
+    "hud",
+    "standings",
+    "simracing"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "optionalDependencies": {
+    "irsdk-node": "^4.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "electron": "^31.2.0",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.5.3",
+    "vite": "^5.3.4",
+    "vite-plugin-electron": "^0.28.7",
+    "vite-plugin-electron-renderer": "^0.14.5"
+  },
+  "build": {
+    "appId": "com.simracing.free-overlay",
+    "productName": "Free Overlay",
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

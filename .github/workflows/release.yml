@@ -1,0 +1,86 @@
+name: Build & Release FreeOverlay.exe
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional release tag to publish (e.g. v1.0.0). Leave empty for rolling 'latest' build."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-exe:
+    name: Build Standalone Windows Executable
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Compile FreeOverlay.exe (64-bit Native WinForms + PerMonitorV2 DPI)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $csc)) {
+            throw "csc.exe not found at $csc"
+          }
+          & $csc /nologo /target:winexe /optimize+ /platform:x64 `
+            /win32manifest:win-native\app.manifest `
+            /out:release\FreeOverlay.exe `
+            win-native\FreeOverlayApp.cs
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Compilation failed with exit code $LASTEXITCODE"
+          }
+
+          $item = Get-Item release\FreeOverlay.exe
+          Write-Host "Successfully built $($item.FullName) ($($item.Length) bytes)"
+
+      - name: Upload FreeOverlay.exe Pipeline Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreeOverlay-Windows-x64
+          path: release/FreeOverlay.exe
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish Tag Release (on v* tag or manual tag input)
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
+          name: Free Overlay ${{ inputs.release_tag != '' && inputs.release_tag || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            release/FreeOverlay.exe
+
+      - name: Publish Rolling Latest Release (on push to main)
+        if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Free Overlay (Latest Build)
+          body: |
+            Automated build of **FreeOverlay.exe** from commit `${{ github.sha }}`.
+
+            ### Download & Run
+            1. Download **`FreeOverlay.exe`** from Assets below.
+            2. Double-click `FreeOverlay.exe` on Windows 10/11 (run iRacing in **Borderless Windowed** mode).
+            3. Use **`F5`** to open/hide the Free Overlay Hub, **`F6`** to Lock/Unlock overlays (click-through mode), **`F7`** to cycle Telemetry Source (`Auto`/`Sim`/`Live`), and **`F8`** to quit.
+          prerelease: false
+          files: |
+            release/FreeOverlay.exe

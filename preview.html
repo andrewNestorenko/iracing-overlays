@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Free Overlay — Interactive HUD Preview</title>
+  <link rel="stylesheet" href="./src/styles/overlay.css" />
+  <style>
+    body {
+      background: radial-gradient(circle at 30% 20%, #1e293b 0%, #090d16 70%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 28px 16px;
+      min-height: 100vh;
+      overflow-y: auto;
+    }
+    .preview-banner {
+      max-width: 620px;
+      width: 100%;
+      margin-bottom: 12px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11.5px;
+      color: #cbd5e1;
+    }
+    .preview-banner strong {
+      color: #38bdf8;
+    }
+  </style>
+</head>
+<body>
+  <div class="preview-banner">
+    <span><strong>Interactive HUD Preview</strong> • Simulating 60Hz/4Hz iRacing Telemetry at Spa-Francorchamps</span>
+    <span>Press <strong>F6</strong> to test Lock/Click-Through</span>
+  </div>
+
+  <div id="overlay-mount" style="width: 100%; max-width: 620px;"></div>
+
+  <script>
+    const LICENSE_COLORS = {
+      R: { bg: '#d32f2f', text: '#ffffff', border: '#ef5350' },
+      D: { bg: '#ef6c00', text: '#ffffff', border: '#ffa726' },
+      C: { bg: '#f9a825', text: '#111318', border: '#ffee58' },
+      B: { bg: '#2e7d32', text: '#ffffff', border: '#66bb6a' },
+      A: { bg: '#0153db', text: '#ffffff', border: '#42a5f5' },
+      P: { bg: '#1e222d', text: '#ffffff', border: '#90a4ae' },
+    };
+
+    const MOCK_SEEDS = [
+      { carIdx: 1, carNumber: '1', userName: 'Maxime Van Der Berg', clubName: 'Benelux', countryCode: 'NL', iRating: 5420, licClass: 'A', sr: '4.99', basePaceSec: 137.185 },
+      { carIdx: 2, carNumber: '14', userName: 'Lukas Schneider', clubName: 'DE-AT-CH', countryCode: 'DE', iRating: 4890, licClass: 'A', sr: '4.42', basePaceSec: 137.310 },
+      { carIdx: 3, carNumber: '23', userName: 'Callum Sterling', clubName: 'UK and I', countryCode: 'GB', iRating: 4510, licClass: 'A', sr: '3.85', basePaceSec: 137.440 },
+      { carIdx: 4, carNumber: '7', userName: 'Alex Nestorenko', clubName: 'California', countryCode: 'US', iRating: 4125, licClass: 'A', sr: '4.18', basePaceSec: 137.515, isPlayer: true },
+      { carIdx: 5, carNumber: '88', userName: 'Mikko Virtanen', clubName: 'Finland', countryCode: 'FI', iRating: 3980, licClass: 'A', sr: '3.64', basePaceSec: 137.620 },
+      { carIdx: 6, carNumber: '44', userName: 'Gabriel Oliveira', clubName: 'Brazil', countryCode: 'BR', iRating: 3740, licClass: 'B', sr: '3.92', basePaceSec: 137.790 },
+      { carIdx: 7, carNumber: '19', userName: 'Antoine Moreau', clubName: 'France', countryCode: 'FR', iRating: 3560, licClass: 'A', sr: '2.74', basePaceSec: 137.880 },
+      { carIdx: 8, carNumber: '63', userName: 'Marco Rossini', clubName: 'Italy', countryCode: 'IT', iRating: 3410, licClass: 'B', sr: '3.45', basePaceSec: 138.010 },
+      { carIdx: 9, carNumber: '27', userName: 'Liam O\'Connor', clubName: 'Australia/NZ', countryCode: 'AU', iRating: 3280, licClass: 'A', sr: '4.05', basePaceSec: 138.125 },
+      { carIdx: 10, carNumber: '91', userName: 'Carlos Mendoza', clubName: 'Iberia', countryCode: 'ES', iRating: 3115, licClass: 'B', sr: '2.58', basePaceSec: 138.240 },
+      { carIdx: 11, carNumber: '52', userName: 'Tyler Vance', clubName: 'New England', countryCode: 'US', iRating: 2940, licClass: 'B', sr: '3.12', basePaceSec: 138.390 },
+      { carIdx: 12, carNumber: '33', userName: 'Henrik Lindqvist', clubName: 'Scandinavia', countryCode: 'SE', iRating: 2785, licClass: 'A', sr: '2.31', basePaceSec: 138.510 },
+      { carIdx: 13, carNumber: '12', userName: 'Kenji Takahashi', clubName: 'Japan', countryCode: 'JP', iRating: 2610, licClass: 'B', sr: '4.40', basePaceSec: 138.680 },
+      { carIdx: 14, carNumber: '77', userName: 'Connor MacLeod', clubName: 'Canada', countryCode: 'CA', iRating: 2450, licClass: 'C', sr: '3.76', basePaceSec: 138.850 },
+      { carIdx: 15, carNumber: '99', userName: 'Ruben Peeters', clubName: 'Benelux', countryCode: 'BE', iRating: 2290, licClass: 'C', sr: '2.91', basePaceSec: 139.020, onPitRoad: true },
+      { carIdx: 16, carNumber: '48', userName: 'Piotr Kowalski', clubName: 'Central-Eastern Europe', countryCode: 'PL', iRating: 2110, licClass: 'B', sr: '1.88', basePaceSec: 139.240 }
+    ];
+
+    const state = {
+      locked: false,
+      mode: 'mock',
+      compactIR: false,
+      showDeltaIR: true,
+      gapMode: 'gap',
+      sessionTimeRemainSec: 1425,
+      sessionBestLapSec: 137.142,
+      sof: Math.round(MOCK_SEEDS.reduce((a, b) => a + b.iRating, 0) / MOCK_SEEDS.length),
+      drivers: MOCK_SEEDS.map((s, i) => ({
+        ...s,
+        position: i + 1,
+        lap: 8,
+        lapDistPct: 0.92 - i * 0.015,
+        lastLapTimeSec: i === 0 ? 137.142 : Number((s.basePaceSec + Math.sin(i * 1.7) * 0.2).toFixed(3)),
+        bestLapTimeSec: i === 0 ? 137.142 : Number((s.basePaceSec - 0.1).toFixed(3)),
+        lastLapStatus: i === 0 ? 'session-best' : (i === 3 || i === 6 ? 'personal-best' : 'normal'),
+        intervalAheadSec: i === 0 ? 0 : Number((1.15 + (i % 3) * 0.35).toFixed(2)),
+        gapToLeaderSec: 0,
+      }))
+    };
+
+    function formatLapTime(seconds) {
+      if (!seconds || seconds <= 0) return '—:——.———';
+      const mins = Math.floor(seconds / 60);
+      const rem = seconds - mins * 60;
+      const whole = Math.floor(rem);
+      const ms = Math.min(999, Math.round((rem - whole) * 1000));
+      return `${mins}:${String(whole).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+    }
+
+    function estimateDelta(pos, total, ir, sof) {
+      const expected = 1 / (1 + Math.pow(10, (sof - ir) / 1600));
+      const actual = (total - pos) / (total - 1);
+      const k = Math.round(1800 / Math.sqrt(total));
+      return Math.round((actual - expected) * k);
+    }
+
+    function renderFlagSvg(code, club) {
+      const svgs = {
+        NL: '<rect width="24" height="5.33" fill="#AE1C28"/><rect width="24" height="5.33" y="5.33" fill="#FFF"/><rect width="24" height="5.34" y="10.66" fill="#21468B"/>',
+        DE: '<rect width="24" height="5.33" fill="#000"/><rect width="24" height="5.33" y="5.33" fill="#DD0000"/><rect width="24" height="5.34" y="10.66" fill="#FFCE00"/>',
+        GB: '<rect width="24" height="16" fill="#012169"/><path d="M0,0 L24,16 M24,0 L0,16" stroke="#FFF" stroke-width="3"/><rect width="24" height="4.8" y="5.6" fill="#FFF"/><rect width="4.8" height="16" x="9.6" fill="#FFF"/><rect width="24" height="2.8" y="6.6" fill="#C8102E"/><rect width="2.8" height="16" x="10.6" fill="#C8102E"/>',
+        US: '<rect width="24" height="16" fill="#FFF"/><rect width="24" height="2.3" y="0" fill="#B22234"/><rect width="24" height="2.3" y="4.6" fill="#B22234"/><rect width="24" height="2.3" y="9.2" fill="#B22234"/><rect width="24" height="2.3" y="13.7" fill="#B22234"/><rect width="11" height="8.8" fill="#3C3B6E"/>',
+        FI: '<rect width="24" height="16" fill="#FFF"/><rect width="24" height="3.6" y="6.2" fill="#003580"/><rect width="3.6" height="16" x="7" fill="#003580"/>',
+        BR: '<rect width="24" height="16" fill="#009739"/><polygon points="12,2 21.5,8 12,14 2.5,8" fill="#FEDD00"/><circle cx="12" cy="8" r="3.2" fill="#012169"/>',
+        FR: '<rect width="8" height="16" x="0" fill="#002395"/><rect width="8" height="16" x="8" fill="#FFF"/><rect width="8" height="16" x="16" fill="#ED2939"/>',
+        IT: '<rect width="8" height="16" x="0" fill="#009246"/><rect width="8" height="16" x="8" fill="#FFF"/><rect width="8" height="16" x="16" fill="#CE2B37"/>',
+        AU: '<rect width="24" height="16" fill="#00008B"/><rect width="11" height="8" fill="#012169"/><rect width="11" height="2" y="3" fill="#FFF"/><rect width="2" height="8" x="4.5" fill="#FFF"/><circle cx="18" cy="10" r="1.5" fill="#FFF"/>',
+        ES: '<rect width="24" height="4" fill="#AA151B"/><rect width="24" height="8" y="4" fill="#F1BF00"/><rect width="24" height="4" y="12" fill="#AA151B"/>',
+        SE: '<rect width="24" height="16" fill="#006AA7"/><rect width="24" height="3.6" y="6.2" fill="#FECC02"/><rect width="3.6" height="16" x="7" fill="#FECC02"/>',
+        JP: '<rect width="24" height="16" fill="#FFF"/><circle cx="12" cy="8" r="4.6" fill="#BC002D"/>',
+        CA: '<rect width="6" height="16" fill="#F00"/><rect width="12" height="16" x="6" fill="#FFF"/><rect width="6" height="16" x="18" fill="#F00"/><circle cx="12" cy="8" r="2.6" fill="#F00"/>',
+        BE: '<rect width="8" height="16" x="0" fill="#000"/><rect width="8" height="16" x="8" fill="#FDDA24"/><rect width="8" height="16" x="16" fill="#EF3340"/>',
+        PL: '<rect width="24" height="8" fill="#FFF"/><rect width="24" height="8" y="8" fill="#DC143C"/>'
+      };
+      return `<span class="flag-badge" title="${club} (${code})"><svg width="20" height="13" viewBox="0 0 24 16" class="flag-svg">${svgs[code] || svgs.US}<rect width="23" height="15" x="0.5" y="0.5" fill="none" stroke="rgba(255,255,255,0.22)"/></svg></span>`;
+    }
+
+    function render() {
+      let runningGap = 0;
+      state.drivers.forEach((d, idx) => {
+        if (idx === 0) d.gapToLeaderSec = 0;
+        else {
+          runningGap += d.intervalAheadSec;
+          d.gapToLeaderSec = Number(runningGap.toFixed(2));
+        }
+      });
+
+      const mins = String(Math.floor(state.sessionTimeRemainSec / 60)).padStart(2, '0');
+      const secs = String(Math.floor(state.sessionTimeRemainSec % 60)).padStart(2, '0');
+
+      const mount = document.getElementById('overlay-mount');
+      mount.innerHTML = `
+        <div class="overlay-container ${state.locked ? 'is-locked' : 'is-unlocked'}">
+          <div class="overlay-toolbar">
+            <div class="drag-region">
+              <span class="brand-dot"></span>
+              <span class="brand-title">FREE OVERLAY</span>
+              <span class="source-pill source-sim">MOCK SIMULATOR</span>
+            </div>
+            <div class="toolbar-actions">
+              ${!state.locked ? `
+                <button class="ctrl-btn" onclick="window.toggleGap()">${state.gapMode === 'gap' ? 'GAP' : 'INT'}</button>
+                <button class="ctrl-btn" onclick="window.toggleIR()">${state.compactIR ? 'iR: 4.1k' : 'iR: 4,125'}</button>
+                <button class="ctrl-btn" onclick="window.toggleDelta()">${state.showDeltaIR ? '±iR ON' : '±iR OFF'}</button>
+              ` : ''}
+              <button class="lock-btn ${state.locked ? 'locked' : 'unlocked'}" onclick="window.toggleLock()">
+                ${state.locked ? 'LOCKED (F6)' : 'UNLOCKED (F6)'}
+              </button>
+            </div>
+          </div>
+
+          <div class="session-header">
+            <div class="session-left">
+              <span class="class-tag">GT3</span>
+              <span class="session-type">RACE</span>
+              <span class="track-name">Circuit de Spa-Francorchamps</span>
+            </div>
+            <div class="session-right">
+              <span class="meta-pill"><span class="meta-label">LAP</span><span class="meta-value">${state.drivers[0].lap}/20</span></span>
+              <span class="meta-pill"><span class="meta-label">REM</span><span class="meta-value">${mins}:${secs}</span></span>
+              <span class="meta-pill sof-pill"><span class="meta-label">SOF</span><span class="meta-value">${state.sof.toLocaleString()}</span></span>
+              <span class="meta-pill"><span class="meta-label">TRK</span><span class="meta-value">32°C</span></span>
+            </div>
+          </div>
+
+          <div class="standings-table-header">
+            <span class="col-pos">P</span>
+            <span class="col-num">#</span>
+            <span class="col-flag">FLG</span>
+            <span class="col-driver">DRIVER</span>
+            <span class="col-sr">SR</span>
+            <span class="col-ir">iRATING</span>
+            <span class="col-gap">${state.gapMode === 'gap' ? 'GAP' : 'INT'}</span>
+            <span class="col-lap">LAST LAP</span>
+          </div>
+
+          <div class="standings-body">
+            ${state.drivers.map(d => {
+              const lic = LICENSE_COLORS[d.licClass];
+              const delta = estimateDelta(d.position, state.drivers.length, d.iRating, state.sof);
+              const irText = state.compactIR ? (d.iRating / 1000).toFixed(1) + 'k' : d.iRating.toLocaleString();
+              const gapVal = state.gapMode === 'gap' ? d.gapToLeaderSec : d.intervalAheadSec;
+              const gapStr = d.position === 1 ? 'LDR' : `+${gapVal.toFixed(1)}s`;
+              return `
+                <div class="standing-row ${d.isPlayer ? 'is-player' : ''} ${d.onPitRoad ? 'in-pits' : ''}">
+                  <div class="col-pos">
+                    <span class="pos-badge ${d.position <= 3 ? 'pos-p' + d.position : ''}">${d.position}</span>
+                  </div>
+                  <div class="col-num">
+                    <span class="car-number-badge">#${d.carNumber}</span>
+                  </div>
+                  <div class="col-flag">
+                    ${renderFlagSvg(d.countryCode, d.clubName)}
+                  </div>
+                  <div class="col-driver">
+                    <span class="driver-name">${d.userName}</span>
+                    ${d.isPlayer ? '<span class="you-tag">YOU</span>' : ''}
+                    ${d.onPitRoad ? '<span class="pit-tag">PIT</span>' : ''}
+                  </div>
+                  <div class="col-sr">
+                    <span class="sr-badge" style="background:${lic.bg};color:${lic.text};border-color:${lic.border}">
+                      <strong class="sr-class">${d.licClass}</strong>
+                      <span class="sr-val">${d.sr}</span>
+                    </span>
+                  </div>
+                  <div class="col-ir">
+                    <span class="ir-badge">
+                      <span class="ir-value">${irText}</span>
+                      ${state.showDeltaIR ? `<span class="ir-delta ${delta >= 0 ? 'delta-pos' : 'delta-neg'}">${delta >= 0 ? '+' + delta : delta}</span>` : ''}
+                    </span>
+                  </div>
+                  <div class="col-gap">
+                    ${d.onPitRoad ? '<span class="gap-pit">IN PIT</span>' : `<span class="gap-text">${gapStr}</span>`}
+                  </div>
+                  <div class="col-lap">
+                    <span class="lap-time lap-${d.lastLapStatus}">${formatLapTime(d.lastLapTimeSec)}</span>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+
+          <div class="overlay-footer">
+            <div class="legend-items">
+              <span class="legend-item"><span class="dot dot-purple"></span> Session Best</span>
+              <span class="legend-item"><span class="dot dot-green"></span> Personal Best</span>
+            </div>
+            <div class="hotkey-hint">
+              <span>F6: Lock/Click-Through</span>
+              <span>•</span>
+              <span>F7: Live/Sim Mode</span>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    window.toggleLock = () => { state.locked = !state.locked; render(); };
+    window.toggleGap = () => { state.gapMode = state.gapMode === 'gap' ? 'interval' : 'gap'; render(); };
+    window.toggleIR = () => { state.compactIR = !state.compactIR; render(); };
+    window.toggleDelta = () => { state.showDeltaIR = !state.showDeltaIR; render(); };
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'F6') { e.preventDefault(); window.toggleLock(); }
+    });
+
+    setInterval(() => {
+      state.sessionTimeRemainSec = Math.max(0, state.sessionTimeRemainSec - 0.25);
+      state.drivers.forEach((d, idx) => {
+        const prev = d.lapDistPct;
+        const next = (prev + (0.25 / d.basePaceSec)) % 1;
+        if (next < prev) {
+          d.lap += 1;
+          const newLap = Number((d.basePaceSec + (Math.random() - 0.48) * 0.45).toFixed(3));
+          d.lastLapTimeSec = newLap;
+          if (newLap < state.sessionBestLapSec) {
+            state.sessionBestLapSec = newLap;
+            state.drivers.forEach(x => { if (x.lastLapStatus === 'session-best') x.lastLapStatus = 'personal-best'; });
+            d.lastLapStatus = 'session-best';
+          } else if (newLap <= d.bestLapTimeSec) {
+            d.bestLapTimeSec = newLap;
+            d.lastLapStatus = 'personal-best';
+          } else {
+            d.lastLapStatus = 'normal';
+          }
+        }
+        d.lapDistPct = next;
+        if (idx > 0) {
+          d.intervalAheadSec = Math.max(0.2, Number((d.intervalAheadSec + (Math.random() - 0.5) * 0.04).toFixed(2)));
+        }
+      });
+      render();
+    }, 250);
+
+    render();
+  </script>
+</body>
+</html>
