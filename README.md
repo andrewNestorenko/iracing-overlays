@@ -12,10 +12,11 @@ All overlays and the configuration hub are packaged inside a single standalone e
 
 ### 1. Free Overlay Hub (Control Center & Settings)
 - Opens on launch and can be toggled anytime via **`F5`** or the Windows system tray icon.
-- **Toggle Overlays On / Off**: Enable or disable the **Standings Overlay** and **Delta Bar Overlay** independently.
+- **Toggle Overlays On / Off**: Enable or disable the **Standings Overlay**, **Delta Bar Overlay**, and **Garage61 Telemetry & Braking Coach Overlay** independently.
 - **Live Per-Widget Customization**:
   - **Standings Settings**: Timing column (`GAP TO LEADER` vs `INTERVAL AHEAD`), iRating display (`FULL 4,125` vs `COMPACT 4.1k`), show/hide projected `±iR` delta, Font Scale (`65%`–`175%`), Window Opacity (`45%`–`100%`), and `Reset Position & Size`.
   - **Delta Bar Settings**: Reference Lap Mode (`Session Best`, `Optimal`, `Personal Best`, `Last Lap`), Bar Scale Range (`±1.0s`, `±2.0s`, `±5.0s`), show/hide Sector Splits (`S1..Sn`), Font Scale, Window Opacity, and `Reset Position & Size`.
+  - **Garage61 Coach Settings**: Layout Style (`OPT A: TRACE`, `OPT B: BAR`, `OPT C: AUDIT`), Lookahead Window (`+80m`, `+120m`, `+180m`), Reference Lap `.csv` loader (`LOAD CSV...` or built-in `SPA` GT3 reference lap), Font Scale, Window Opacity, and `Reset Position & Size`.
 - **Automatic Persistence**: All settings, window coordinates, dimensions, and font scales are saved automatically to `%LOCALAPPDATA%\FreeOverlay\settings.cfg`.
 
 ### 2. Standings Overlay
@@ -34,6 +35,13 @@ All overlays and the configuration hub are packaged inside a single standalone e
 - **Predicted Lap Time & Off-Track Indicator (Right)**: Real-time projected lap time (`Ref Lap + Live Delta`) plus an automatic `OFF-TRACK (1x)` warning when `PlayerTrackSurface == 0`.
 - **Bi-Directional Center-Zero Progress Bar**: Anchored at `0.00s` in the center; fills left in green/purple when ahead of reference pace and right in red when behind.
 - **Official iRacing Sector Splits (`S1 .. Sn`)**: Parses the track's official sector list (`SplitTimeInfo -> Sectors -> SectorStartPct`) from the iRacing SDK YAML and computes live & locked sector splits across any number of track sectors.
+
+### 4. Garage61 Reference Telemetry & Braking Coach Overlay
+- **Distance-Indexed (`LapDistPct`) Telemetry Synchronization**: Aligns your live car position, brake pressure, throttle, speed, and gear against a Garage61 `.csv` telemetry export (or the built-in Spa-Francorchamps GT3 reference lap) by exact track distance rather than elapsed time.
+- **3 Switchable Layout Designs** (selectable in the Hub or by clicking the `STYLE A / B / C` pill on the overlay):
+  - **Option A — Lookahead Trace + Pedal Bars**: Spatial lookahead graph (`-60m` behind to `+80m`/`+120m`/`+180m` ahead of your bumper) with the Garage61 ghost brake/throttle curves scrolling toward your `NOW` crosshair, `G61 BRK` marker flag, braking spot countdown/delta banner, and dual vertical live vs. ghost brake & throttle bars with peak target line.
+  - **Option B — Compact Brake Coach Bar**: Ultra-minimalist horizontal sightline bar showing the countdown to the next braking zone (`BRK IN 34 m` → `BRAKE NOW!`), live vs. ghost brake pressure comparison bar with target peak marker, and exact braking spot delta in meters (`4.2m EARLY` / `1.5m LATE` / `ON TARGET`).
+  - **Option C — Pro Box + Corner Audit**: Combines the spatial lookahead trace, live pedal matcher, speed & gear delta box, and a **3-Corner Braking Audit Strip** that automatically scores your last 3 corners on braking point accuracy (`±m`), peak brake pressure (`% vs %`), and minimum apex speed (`kph`).
 
 ---
 
