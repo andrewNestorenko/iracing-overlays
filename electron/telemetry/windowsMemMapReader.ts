@@ -68,10 +68,13 @@ public class IracingMemReader {
             acc.ReadArray(bestBufOffset, dataBuf, 0, bufLen);
 
             int playerCarIdx = 0;
+            int sessionNum = 0;
             double sessionTimeRemain = 0;
             int sessionLapsRemain = 0;
             float airTemp = 22f;
             float trackTemp = 32f;
+            float lapBestLapTime = 0f;
+            float lapLastLapTime = 0f;
 
             int[] pos = new int[64];
             int[] classPos = new int[64];
@@ -90,10 +93,13 @@ public class IracingMemReader {
               string vName = ReadCString(varHeaders, hOff + 16, 32);
 
               if (vName == "PlayerCarIdx") playerCarIdx = BitConverter.ToInt32(dataBuf, vOffset);
+              else if (vName == "SessionNum") sessionNum = BitConverter.ToInt32(dataBuf, vOffset);
               else if (vName == "SessionTimeRemain") sessionTimeRemain = BitConverter.ToDouble(dataBuf, vOffset);
               else if (vName == "SessionLapsRemainEx") sessionLapsRemain = BitConverter.ToInt32(dataBuf, vOffset);
               else if (vName == "AirTemp") airTemp = BitConverter.ToSingle(dataBuf, vOffset);
               else if (vName == "TrackTempCrew") trackTemp = BitConverter.ToSingle(dataBuf, vOffset);
+              else if (vName == "LapBestLapTime") lapBestLapTime = BitConverter.ToSingle(dataBuf, vOffset);
+              else if (vName == "LapLastLapTime") lapLastLapTime = BitConverter.ToSingle(dataBuf, vOffset);
               else if (vName == "CarIdxPosition") {
                 for (int c = 0; c < Math.Min(64, vCount); c++) pos[c] = BitConverter.ToInt32(dataBuf, vOffset + c * 4);
               } else if (vName == "CarIdxClassPosition") {
@@ -117,8 +123,8 @@ public class IracingMemReader {
             StringBuilder sb = new StringBuilder();
             sb.Append("{\\"connected\\":true,");
             sb.AppendFormat(System.Globalization.CultureInfo.InvariantCulture,
-              "\\"playerCarIdx\\":{0},\\"sessionTimeRemain\\":{1:F2},\\"sessionLapsRemain\\":{2},\\"airTemp\\":{3:F1},\\"trackTemp\\":{4:F1},",
-              playerCarIdx, sessionTimeRemain, sessionLapsRemain, airTemp, trackTemp);
+              "\\"playerCarIdx\\":{0},\\"sessionNum\\":{1},\\"sessionTimeRemain\\":{2:F2},\\"sessionLapsRemain\\":{3},\\"airTemp\\":{4:F1},\\"trackTemp\\":{5:F1},\\"lapBestLapTime\\":{6:F4},\\"lapLastLapTime\\":{7:F4},",
+              playerCarIdx, sessionNum, sessionTimeRemain, sessionLapsRemain, airTemp, trackTemp, lapBestLapTime, lapLastLapTime);
             sb.AppendFormat("\\"pos\\":[{0}],", string.Join(",", pos));
             sb.AppendFormat("\\"classPos\\":[{0}],", string.Join(",", classPos));
             sb.AppendFormat("\\"lap\\":[{0}],", string.Join(",", lap));
@@ -143,10 +149,13 @@ public class IracingMemReader {
 interface RawWinSnapshot {
   connected: boolean;
   playerCarIdx?: number;
+  sessionNum?: number;
   sessionTimeRemain?: number;
   sessionLapsRemain?: number;
   airTemp?: number;
   trackTemp?: number;
+  lapBestLapTime?: number;
+  lapLastLapTime?: number;
   pos?: number[];
   classPos?: number[];
   lap?: number[];
@@ -174,50 +183,113 @@ interface ParsedYamlDriver {
   incidentCount: number;
 }
 
-function parseIracingYamlDrivers(yaml: string): {
+function extractTopLevelYamlSection(yaml: string, sectionName: string): string {
+  const startMatch = yaml.match(new RegExp(`(?:^|\\r?\\n)${sectionName}:[ \\t]*\\r?\\n`));
+  if (!startMatch || startMatch.index === undefined) return '';
+  const tail = yaml.slice(startMatch.index + startMatch[0].length);
+  const nextTop = tail.match(/\r?\n(?:[A-Za-z0-9_]+:|\.\.\.)/);
+  return nextTop && nextTop.index !== undefined ? tail.slice(0, nextTop.index) : tail;
+}
+
+function extractYamlField(chunk: string, key: string, def = ''): string {
+  const m = chunk.match(new RegExp(`^[ \\t]*${key}:[ \\t]*([^\\r\\n]*)$`, 'm'));
+  if (!m) return def;
+  const val = m[1].trim().replace(/^["']|["']$/g, '');
+  if (!val || val.toLowerCase() === '-none-') return def;
+  return val;
+}
+
+function parseIracingYamlDrivers(
+  yaml: string,
+  sessionNum = 0
+): {
   trackDisplayName: string;
+  sessionType: 'Practice' | 'Qualify' | 'Race' | 'Warmup';
   drivers: ParsedYamlDriver[];
 } {
-  const trackMatch = yaml.match(/TrackDisplayName:\s*(.+)/);
-  const trackDisplayName = trackMatch
-    ? trackMatch[1].trim().replace(/^["']|["']$/g, '')
-    : 'iRacing Circuit';
+  const trackDisplayName = extractYamlField(yaml, 'TrackDisplayName', 'iRacing Circuit');
 
-  const driversSectionIdx = yaml.indexOf('Drivers:');
-  if (driversSectionIdx === -1) {
-    return { trackDisplayName, drivers: [] };
+  let sessionType: 'Practice' | 'Qualify' | 'Race' | 'Warmup' = 'Race';
+  const sessionInfoSection = extractTopLevelYamlSection(yaml, 'SessionInfo');
+  if (sessionInfoSection) {
+    const sessionBlocks = sessionInfoSection.split(/(?:^|\r?\n)[ \t]*-[ \t]*SessionNum:/);
+    let activeChunk = '';
+    for (let i = 1; i < sessionBlocks.length; i++) {
+      const chunk = 'SessionNum:' + sessionBlocks[i];
+      if (Number(extractYamlField(chunk, 'SessionNum', '-1')) === sessionNum) {
+        activeChunk = chunk;
+        break;
+      }
+      activeChunk = chunk;
+    }
+    const rawType = extractYamlField(activeChunk, 'SessionType', 'Race');
+    if (/prac|test/i.test(rawType)) sessionType = 'Practice';
+    else if (/qual/i.test(rawType)) sessionType = 'Qualify';
+    else if (/warm/i.test(rawType)) sessionType = 'Warmup';
   }
 
-  const driversBlock = yaml.slice(driversSectionIdx);
-  const entries = driversBlock.split(/\n\s*-\s*CarIdx:/);
+  const driverInfoSection = extractTopLevelYamlSection(yaml, 'DriverInfo');
+  if (!driverInfoSection) {
+    return { trackDisplayName, sessionType, drivers: [] };
+  }
+
+  const paceCarIdx = Number(extractYamlField(driverInfoSection, 'PaceCarIdx', '-1'));
+  const driversHeaderMatch = driverInfoSection.match(/(?:^|\r?\n)([ \t]+)Drivers:[ \t]*\r?\n/);
+  if (!driversHeaderMatch || driversHeaderMatch.index === undefined) {
+    return { trackDisplayName, sessionType, drivers: [] };
+  }
+
+  const driversIndent = driversHeaderMatch[1];
+  const driversTail = driverInfoSection.slice(
+    driversHeaderMatch.index + driversHeaderMatch[0].length
+  );
+  const nextSiblingKey = driversTail.match(
+    new RegExp(`\\r?\\n${driversIndent}[A-Za-z0-9_]+:`)
+  );
+  const driversBlock =
+    '\n' +
+    (nextSiblingKey && nextSiblingKey.index !== undefined
+      ? driversTail.slice(0, nextSiblingKey.index)
+      : driversTail);
+
+  const entries = driversBlock.split(/\r?\n[ \t]*-[ \t]*CarIdx:/);
   const drivers: ParsedYamlDriver[] = [];
+  const seenCarIdx = new Set<number>();
 
   for (let i = 1; i < entries.length; i++) {
     const chunk = 'CarIdx:' + entries[i];
-    const getField = (key: string, def = ''): string => {
-      const m = chunk.match(new RegExp(`^\\s*${key}:\\s*(.+)$`, 'm'));
-      return m ? m[1].trim().replace(/^["']|["']$/g, '') : def;
-    };
+    const carIdx = Number(extractYamlField(chunk, 'CarIdx', '-1'));
+    if (!Number.isInteger(carIdx) || carIdx < 0 || carIdx >= 64) continue;
+    if (carIdx === paceCarIdx || seenCarIdx.has(carIdx)) continue;
 
-    const carIdx = Number(getField('CarIdx', '0'));
+    const isPaceCar = extractYamlField(chunk, 'CarIsPaceCar', '0') === '1';
+    const isSpectator = extractYamlField(chunk, 'IsSpectator', '0') === '1';
+    const userName = extractYamlField(chunk, 'UserName', '');
+    if (!userName || userName.toLowerCase() === 'pace car') continue;
+
+    seenCarIdx.add(carIdx);
     drivers.push({
       carIdx,
-      userName: getField('UserName', `Driver #${carIdx}`),
-      userId: Number(getField('UserID', String(carIdx))),
-      carNumber: getField('CarNumber', String(carIdx)),
-      iRating: Number(getField('IRating', '1350')),
-      licString: getField('LicString', 'R 2.50'),
-      clubName: getField('ClubName', getField('FlairName', 'International')),
-      carClassShortName: getField('CarClassShortName', 'GT3'),
-      carClassColor: getField('CarClassColor', '0xff5252'),
-      carScreenNameShort: getField('CarScreenNameShort', 'Race Car'),
-      isPaceCar: getField('CarIsPaceCar', '0') === '1',
-      isSpectator: getField('IsSpectator', '0') === '1',
-      incidentCount: Number(getField('CurDriverIncidentCount', '0')),
+      userName,
+      userId: Number(extractYamlField(chunk, 'UserID', String(carIdx))),
+      carNumber: extractYamlField(chunk, 'CarNumber', String(carIdx)),
+      iRating: Number(extractYamlField(chunk, 'IRating', '1350')),
+      licString: extractYamlField(chunk, 'LicString', 'R 2.50'),
+      clubName: extractYamlField(
+        chunk,
+        'ClubName',
+        extractYamlField(chunk, 'FlairName', 'International')
+      ),
+      carClassShortName: extractYamlField(chunk, 'CarClassShortName', 'GT3'),
+      carClassColor: extractYamlField(chunk, 'CarClassColor', '0xff5252'),
+      carScreenNameShort: extractYamlField(chunk, 'CarScreenNameShort', 'Race Car'),
+      isPaceCar,
+      isSpectator,
+      incidentCount: Number(extractYamlField(chunk, 'CurDriverIncidentCount', '0')),
     });
   }
 
-  return { trackDisplayName, drivers };
+  return { trackDisplayName, sessionType, drivers };
 }
 
 export class WindowsMemMapReader {
@@ -286,7 +358,11 @@ Add-Type -TypeDefinition $code -Language CSharp
       }
 
       const yaml = Buffer.from(snap.yamlB64, 'base64').toString('utf8');
-      const { trackDisplayName, drivers } = parseIracingYamlDrivers(yaml);
+      const { trackDisplayName, sessionType, drivers } = parseIracingYamlDrivers(
+        yaml,
+        Number(snap.sessionNum ?? 0)
+      );
+      const isRaceSession = sessionType === 'Race';
       const activeDrivers = drivers.filter((d) => !d.isPaceCar && !d.isSpectator);
       if (!activeDrivers.length) {
         this.latestPayload = null;
@@ -299,7 +375,10 @@ Add-Type -TypeDefinition $code -Language CSharp
 
       let sessionBestLapSec = Infinity;
       activeDrivers.forEach((d) => {
-        const best = Number(snap.bestLap?.[d.carIdx] ?? -1);
+        let best = Number(snap.bestLap?.[d.carIdx] ?? -1);
+        if (d.carIdx === snap.playerCarIdx && best <= 0 && (snap.lapBestLapTime ?? 0) > 0) {
+          best = Number(snap.lapBestLapTime);
+        }
         if (best > 0 && best < sessionBestLapSec) {
           sessionBestLapSec = best;
         }
@@ -309,8 +388,16 @@ Add-Type -TypeDefinition $code -Language CSharp
         const idx = d.carIdx;
         const rawPos = Number(snap.pos?.[idx] ?? 0);
         const rawClassPos = Number(snap.classPos?.[idx] ?? 0);
-        const lastLap = Number(snap.lastLap?.[idx] ?? -1);
-        const bestLap = Number(snap.bestLap?.[idx] ?? -1);
+        let lastLap = Number(snap.lastLap?.[idx] ?? -1);
+        let bestLap = Number(snap.bestLap?.[idx] ?? -1);
+        if (idx === snap.playerCarIdx) {
+          if (lastLap <= 0 && (snap.lapLastLapTime ?? 0) > 0) {
+            lastLap = Number(snap.lapLastLapTime);
+          }
+          if (bestLap <= 0 && (snap.lapBestLapTime ?? 0) > 0) {
+            bestLap = Number(snap.lapBestLapTime);
+          }
+        }
         const lap = Number(snap.lap?.[idx] ?? 0);
         const lapDistPct = Number(snap.lapDist?.[idx] ?? 0);
         const onPitRoad = Boolean(snap.onPit?.[idx]);
@@ -359,11 +446,20 @@ Add-Type -TypeDefinition $code -Language CSharp
         if (a.position > 0 && b.position > 0) return a.position - b.position;
         if (a.position > 0) return -1;
         if (b.position > 0) return 1;
+        if (!isRaceSession) {
+          if (a.bestLapTimeSec > 0 && b.bestLapTimeSec > 0) {
+            return a.bestLapTimeSec - b.bestLapTimeSec;
+          }
+          if (a.bestLapTimeSec > 0) return -1;
+          if (b.bestLapTimeSec > 0) return 1;
+        }
         const progA = a.lap + a.lapDistPct;
         const progB = b.lap + b.lapDistPct;
         if (Math.abs(progA - progB) > 0.001) return progB - progA;
         return b.iRating - a.iRating;
       });
+
+      const leaderBestLap = standings[0]?.bestLapTimeSec ?? 0;
 
       standings.forEach((driver, index) => {
         driver.position = index + 1;
@@ -372,6 +468,12 @@ Add-Type -TypeDefinition $code -Language CSharp
           driver.gapToLeaderSec = 0;
           driver.intervalAheadSec = 0;
         } else {
+          if (!isRaceSession) {
+            driver.gapToLeaderSec =
+              driver.bestLapTimeSec > 0 && leaderBestLap > 0
+                ? Math.max(0, Number((driver.bestLapTimeSec - leaderBestLap).toFixed(3)))
+                : 0;
+          }
           const prev = standings[index - 1];
           driver.intervalAheadSec = Math.max(
             0,
@@ -387,6 +489,7 @@ Add-Type -TypeDefinition $code -Language CSharp
       });
 
       const sessionTimeRemainSec = Math.max(0, Number(snap.sessionTimeRemain ?? 0));
+      const rawTotalLaps = Number(snap.sessionLapsRemain ?? 0);
 
       this.latestPayload = {
         connected: true,
@@ -395,10 +498,10 @@ Add-Type -TypeDefinition $code -Language CSharp
         session: {
           trackDisplayName,
           trackConfigName: '',
-          sessionType: 'Race',
+          sessionType,
           strengthOfField: sof,
           currentLap: Math.max(1, ...standings.map((s) => s.lap)),
-          totalLaps: Math.max(0, Number(snap.sessionLapsRemain ?? 0)),
+          totalLaps: rawTotalLaps > 0 && rawTotalLaps < 32767 ? rawTotalLaps : 0,
           sessionTimeRemainSec,
           isTimedSession: sessionTimeRemainSec > 0 && sessionTimeRemainSec < 86000,
           flagState: 'GREEN',

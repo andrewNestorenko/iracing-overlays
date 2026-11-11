@@ -39,6 +39,7 @@ export const StandingsOverlay: React.FC<StandingsOverlayProps> = ({
 }) => {
   const [compactIR] = useState(false);
   const [showDeltaIR] = useState(true);
+  const [showCarNumber, setShowCarNumber] = useState(true);
   const [gapMode, setGapMode] = useState<'gap' | 'interval'>('gap');
   const [cornerMode, setCornerMode] = useState<'resize' | 'font'>('resize');
   const [widgetSize, setWidgetSize] = useState({ width: 640, height: 592 });
@@ -121,7 +122,7 @@ export const StandingsOverlay: React.FC<StandingsOverlayProps> = ({
 
   return (
     <div
-      className={`overlay-container ${overlayState.locked ? 'is-locked' : 'is-unlocked'}`}
+      className={`overlay-container ${overlayState.locked ? 'is-locked' : 'is-unlocked'} ${!showCarNumber ? 'no-car-num' : ''}`}
       style={
         {
           '--widget-width': `${widgetSize.width}px`,
@@ -187,6 +188,15 @@ export const StandingsOverlay: React.FC<StandingsOverlayProps> = ({
                   </button>
                 ))}
               </div>
+
+              <button
+                type="button"
+                className="ctrl-btn"
+                onClick={() => setShowCarNumber((prev) => !prev)}
+                title="Show or Hide Car Number (#) Column"
+              >
+                {showCarNumber ? '# ON' : '# OFF'}
+              </button>
 
               <button
                 type="button"
@@ -274,7 +284,7 @@ export const StandingsOverlay: React.FC<StandingsOverlayProps> = ({
       {/* Column Headers */}
       <div className="standings-table-header">
         <span className="col-pos">P</span>
-        <span className="col-num">#</span>
+        {showCarNumber && <span className="col-num">#</span>}
         <span className="col-flag">FLG</span>
         <span className="col-driver">DRIVER</span>
         <span className="col-sr">SR</span>
@@ -320,14 +330,16 @@ export const StandingsOverlay: React.FC<StandingsOverlayProps> = ({
                 </div>
 
                 {/* Car Number */}
-                <div className="col-num">
-                  <span
-                    className="car-number-badge"
-                    style={{ borderLeftColor: driver.carClassColorHex }}
-                  >
-                    #{driver.carNumber}
-                  </span>
-                </div>
+                {showCarNumber && (
+                  <div className="col-num">
+                    <span
+                      className="car-number-badge"
+                      style={{ borderLeftColor: driver.carClassColorHex }}
+                    >
+                      #{driver.carNumber}
+                    </span>
+                  </div>
+                )}
 
                 {/* Country Flag */}
                 <div className="col-flag">

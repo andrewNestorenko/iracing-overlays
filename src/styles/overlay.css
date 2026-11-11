@@ -349,6 +349,11 @@ body {
   column-gap: 6px;
 }
 
+.no-car-num .standings-table-header,
+.no-car-num .standing-row {
+  grid-template-columns: 30px 30px 1fr 58px 86px 56px 76px;
+}
+
 .standings-table-header {
   height: 24px;
   background: rgba(12, 15, 22, 0.95);

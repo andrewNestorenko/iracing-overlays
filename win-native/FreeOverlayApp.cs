@@ -67,6 +67,7 @@ namespace FreeOverlay
         public TelemetryMode Mode = TelemetryMode.Auto;
 
         // Standings Settings
+        public bool ShowCarNumber = true;
         public bool ShowInterval = false;
         public bool CompactIR = false;
         public bool ShowDeltaIR = true;
@@ -90,6 +91,7 @@ namespace FreeOverlay
 
         // Garage61 Telemetry & Braking Coach Settings (Options A / B / C)
         public Garage61LayoutStyle Garage61Style = Garage61LayoutStyle.OptionA_LookaheadTraceAndPedals;
+        public bool Garage61AudioEnabled = true;
         public int Garage61LookaheadMeters = 120;
         public float Garage61FontScale = 1.0f;
         public float Garage61Opacity = 0.95f;
@@ -127,6 +129,7 @@ namespace FreeOverlay
                 sb.AppendLine("DeltaBarEnabled=" + DeltaBarEnabled);
                 sb.AppendLine("Garage61Enabled=" + Garage61Enabled);
                 sb.AppendLine("Mode=" + (int)Mode);
+                sb.AppendLine("ShowCarNumber=" + ShowCarNumber);
                 sb.AppendLine("ShowInterval=" + ShowInterval);
                 sb.AppendLine("CompactIR=" + CompactIR);
                 sb.AppendLine("ShowDeltaIR=" + ShowDeltaIR);
@@ -146,6 +149,7 @@ namespace FreeOverlay
                 sb.AppendLine("DeltaW=" + DeltaW);
                 sb.AppendLine("DeltaH=" + DeltaH);
                 sb.AppendLine("Garage61Style=" + (int)Garage61Style);
+                sb.AppendLine("Garage61AudioEnabled=" + Garage61AudioEnabled);
                 sb.AppendLine("Garage61LookaheadMeters=" + Garage61LookaheadMeters);
                 sb.AppendLine("Garage61FontScale=" + Garage61FontScale.ToString(CultureInfo.InvariantCulture));
                 sb.AppendLine("Garage61Opacity=" + Garage61Opacity.ToString(CultureInfo.InvariantCulture));
@@ -182,6 +186,7 @@ namespace FreeOverlay
                     else if (k == "DeltaBarEnabled" && bool.TryParse(v, out bv)) DeltaBarEnabled = bv;
                     else if (k == "Garage61Enabled" && bool.TryParse(v, out bv)) Garage61Enabled = bv;
                     else if (k == "Mode" && int.TryParse(v, out iv)) Mode = (TelemetryMode)(iv % 3);
+                    else if (k == "ShowCarNumber" && bool.TryParse(v, out bv)) ShowCarNumber = bv;
                     else if (k == "ShowInterval" && bool.TryParse(v, out bv)) ShowInterval = bv;
                     else if (k == "CompactIR" && bool.TryParse(v, out bv)) CompactIR = bv;
                     else if (k == "ShowDeltaIR" && bool.TryParse(v, out bv)) ShowDeltaIR = bv;
@@ -201,6 +206,7 @@ namespace FreeOverlay
                     else if (k == "DeltaW" && int.TryParse(v, out iv)) DeltaW = iv;
                     else if (k == "DeltaH" && int.TryParse(v, out iv)) DeltaH = iv;
                     else if (k == "Garage61Style" && int.TryParse(v, out iv)) Garage61Style = (Garage61LayoutStyle)(iv % 3);
+                    else if (k == "Garage61AudioEnabled" && bool.TryParse(v, out bv)) Garage61AudioEnabled = bv;
                     else if (k == "Garage61LookaheadMeters" && int.TryParse(v, out iv)) Garage61LookaheadMeters = Math.Max(40, Math.Min(350, iv));
                     else if (k == "Garage61FontScale" && float.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out fv)) Garage61FontScale = Math.Max(0.65f, Math.Min(1.75f, fv));
                     else if (k == "Garage61Opacity" && float.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out fv)) Garage61Opacity = Math.Max(0.45f, Math.Min(1.0f, fv));
@@ -344,9 +350,255 @@ namespace FreeOverlay
         public bool Completed;
     }
 
+    /// <summary>
+    /// Zero-latency in-memory synthesized motorsport braking audio cue system.
+    /// Plays a 3-beat preparatory countdown (1.05s -> 0.70s -> 0.35s) followed by
+    /// a distinct dual-harmonic "BRAKE NOW!" cue at the exact reference braking point (0.00s).
+    /// </summary>
+    public static class BrakingAudioCoach
+    {
+        [DllImport("winmm.dll", SetLastError = true)]
+        private static extern bool PlaySound(IntPtr pszSound, IntPtr hmod, uint fdwSound);
+
+        private const uint SND_ASYNC = 0x0001;
+        private const uint SND_NODEFAULT = 0x0002;
+        private const uint SND_MEMORY = 0x0004;
+        private const int SAMPLE_RATE = 44100;
+
+        private static bool _initialized = false;
+        private static GCHandle _pinPrep1;
+        private static GCHandle _pinPrep2;
+        private static GCHandle _pinPrep3;
+        private static GCHandle _pinBrakeHeavy;
+        private static GCHandle _pinBrakeLight;
+        private static GCHandle _pinTestCadence;
+
+        public static void EnsureInitialized()
+        {
+            if (_initialized) return;
+            _initialized = true;
+            try
+            {
+                // 3-step rising preparatory pips (G5 -> B5 -> D6)
+                byte[] wavPrep1 = BuildSingleToneWav(784.0, 48, 0.48, 0.25);
+                byte[] wavPrep2 = BuildSingleToneWav(988.0, 48, 0.58, 0.28);
+                byte[] wavPrep3 = BuildSingleToneWav(1175.0, 52, 0.70, 0.32);
+
+                // Exact Brake Point cues (Heavy corner double-chirp vs Medium/Light single punch)
+                byte[] wavBrakeHeavy = BuildBrakeNowWav(true);
+                byte[] wavBrakeLight = BuildBrakeNowWav(false);
+
+                // Full 3-2-1-BRAKE test sequence for Hub / toggle preview
+                byte[] wavTest = BuildTestSequenceWav();
+
+                _pinPrep1 = GCHandle.Alloc(wavPrep1, GCHandleType.Pinned);
+                _pinPrep2 = GCHandle.Alloc(wavPrep2, GCHandleType.Pinned);
+                _pinPrep3 = GCHandle.Alloc(wavPrep3, GCHandleType.Pinned);
+                _pinBrakeHeavy = GCHandle.Alloc(wavBrakeHeavy, GCHandleType.Pinned);
+                _pinBrakeLight = GCHandle.Alloc(wavBrakeLight, GCHandleType.Pinned);
+                _pinTestCadence = GCHandle.Alloc(wavTest, GCHandleType.Pinned);
+            }
+            catch
+            {
+            }
+        }
+
+        public static void PlayPrepBeep(int stage)
+        {
+            EnsureInitialized();
+            try
+            {
+                IntPtr ptr = IntPtr.Zero;
+                if (stage == 1 && _pinPrep1.IsAllocated) ptr = _pinPrep1.AddrOfPinnedObject();
+                else if (stage == 2 && _pinPrep2.IsAllocated) ptr = _pinPrep2.AddrOfPinnedObject();
+                else if (stage == 3 && _pinPrep3.IsAllocated) ptr = _pinPrep3.AddrOfPinnedObject();
+
+                if (ptr != IntPtr.Zero)
+                {
+                    PlaySound(ptr, IntPtr.Zero, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        public static void PlayBrakeNow(bool heavyBraking)
+        {
+            EnsureInitialized();
+            try
+            {
+                IntPtr ptr = heavyBraking
+                    ? (_pinBrakeHeavy.IsAllocated ? _pinBrakeHeavy.AddrOfPinnedObject() : IntPtr.Zero)
+                    : (_pinBrakeLight.IsAllocated ? _pinBrakeLight.AddrOfPinnedObject() : IntPtr.Zero);
+
+                if (ptr != IntPtr.Zero)
+                {
+                    PlaySound(ptr, IntPtr.Zero, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        public static void PlayTestSequence()
+        {
+            EnsureInitialized();
+            try
+            {
+                if (_pinTestCadence.IsAllocated)
+                {
+                    PlaySound(_pinTestCadence.AddrOfPinnedObject(), IntPtr.Zero, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private static byte[] BuildSingleToneWav(double freqHz, int durationMs, double volume, double harmonicMix)
+        {
+            int numSamples = (SAMPLE_RATE * durationMs) / 1000;
+            short[] pcm = new short[numSamples];
+            SynthesizeToneInto(pcm, 0, numSamples, freqHz, volume, harmonicMix);
+            return EncodePcmToWavBytes(pcm);
+        }
+
+        private static byte[] BuildBrakeNowWav(bool heavy)
+        {
+            if (heavy)
+            {
+                // Urgent F1/GT3 double-pulse at exact braking spot (52ms G6 + 10ms gap + 78ms A6/G6)
+                int totalMs = 140;
+                int totalSamples = (SAMPLE_RATE * totalMs) / 1000;
+                short[] pcm = new short[totalSamples];
+
+                int p1Samples = (SAMPLE_RATE * 52) / 1000;
+                int p2Start = (SAMPLE_RATE * 60) / 1000;
+                int p2Samples = totalSamples - p2Start;
+
+                SynthesizeToneInto(pcm, 0, p1Samples, 1568.0, 0.88, 0.42);
+                SynthesizeToneInto(pcm, p2Start, p2Samples, 1760.0, 0.94, 0.45);
+                return EncodePcmToWavBytes(pcm);
+            }
+            else
+            {
+                int totalSamples = (SAMPLE_RATE * 100) / 1000;
+                short[] pcm = new short[totalSamples];
+                SynthesizeToneInto(pcm, 0, totalSamples, 1568.0, 0.82, 0.38);
+                return EncodePcmToWavBytes(pcm);
+            }
+        }
+
+        private static byte[] BuildTestSequenceWav()
+        {
+            // Full 3-2-1-BRAKE cadence at 350ms intervals (0ms, 350ms, 700ms, 1050ms)
+            int totalMs = 1220;
+            int totalSamples = (SAMPLE_RATE * totalMs) / 1000;
+            short[] pcm = new short[totalSamples];
+
+            int pipLen = (SAMPLE_RATE * 48) / 1000;
+            SynthesizeToneInto(pcm, 0, pipLen, 784.0, 0.48, 0.25);
+            SynthesizeToneInto(pcm, (SAMPLE_RATE * 350) / 1000, pipLen, 988.0, 0.58, 0.28);
+            SynthesizeToneInto(pcm, (SAMPLE_RATE * 700) / 1000, (SAMPLE_RATE * 52) / 1000, 1175.0, 0.70, 0.32);
+
+            int brkStart = (SAMPLE_RATE * 1050) / 1000;
+            int p1Samples = (SAMPLE_RATE * 52) / 1000;
+            int p2Start = brkStart + (SAMPLE_RATE * 60) / 1000;
+            int p2Samples = Math.Max(0, totalSamples - p2Start);
+            SynthesizeToneInto(pcm, brkStart, p1Samples, 1568.0, 0.88, 0.42);
+            if (p2Samples > 0)
+            {
+                SynthesizeToneInto(pcm, p2Start, p2Samples, 1760.0, 0.94, 0.45);
+            }
+
+            return EncodePcmToWavBytes(pcm);
+        }
+
+        private static void SynthesizeToneInto(short[] buffer, int offset, int length, double freqHz, double volume, double harmonicMix)
+        {
+            int attackSamples = Math.Max(1, (SAMPLE_RATE * 4) / 1000);   // 4ms click-free cosine fade-in
+            int releaseSamples = Math.Max(1, (SAMPLE_RATE * 10) / 1000); // 10ms cosine fade-out
+
+            for (int i = 0; i < length && (offset + i) < buffer.Length; i++)
+            {
+                double t = (double)i / SAMPLE_RATE;
+                double env = 1.0;
+                if (i < attackSamples)
+                {
+                    env = 0.5 * (1.0 - Math.Cos(Math.PI * i / attackSamples));
+                }
+                else if (i > length - releaseSamples)
+                {
+                    int rem = length - i;
+                    env = 0.5 * (1.0 - Math.Cos(Math.PI * Math.Max(0, rem) / releaseSamples));
+                }
+
+                // Slight natural exponential punch
+                double punch = Math.Exp(-1.6 * ((double)i / length));
+
+                // Fundamental + octave sub-reinforcement + 2nd harmonic for cockpit clarity
+                double w = 2.0 * Math.PI * freqHz * t;
+                double wave = Math.Sin(w)
+                            + harmonicMix * Math.Sin(w * 2.0)
+                            + (harmonicMix * 0.65) * Math.Sin(w * 0.5);
+                double norm = 1.0 + harmonicMix * 1.65;
+
+                double sampleVal = (wave / norm) * env * (0.45 + 0.55 * punch) * volume;
+                if (sampleVal > 1.0) sampleVal = 1.0;
+                else if (sampleVal < -1.0) sampleVal = -1.0;
+
+                buffer[offset + i] = (short)Math.Round(sampleVal * 31000.0);
+            }
+        }
+
+        private static byte[] EncodePcmToWavBytes(short[] pcm)
+        {
+            int dataBytes = pcm.Length * 2;
+            byte[] wav = new byte[44 + dataBytes];
+
+            // RIFF header
+            wav[0] = (byte)'R'; wav[1] = (byte)'I'; wav[2] = (byte)'F'; wav[3] = (byte)'F';
+            WriteInt32LE(wav, 4, 36 + dataBytes);
+            wav[8] = (byte)'W'; wav[9] = (byte)'A'; wav[10] = (byte)'V'; wav[11] = (byte)'E';
+
+            // fmt subchunk
+            wav[12] = (byte)'f'; wav[13] = (byte)'m'; wav[14] = (byte)'t'; wav[15] = (byte)' ';
+            WriteInt32LE(wav, 16, 16);             // Subchunk1Size (16 for PCM)
+            WriteInt16LE(wav, 20, 1);              // AudioFormat (1 = PCM)
+            WriteInt16LE(wav, 22, 1);              // NumChannels (1 = mono)
+            WriteInt32LE(wav, 24, SAMPLE_RATE);    // SampleRate
+            WriteInt32LE(wav, 28, SAMPLE_RATE * 2);// ByteRate
+            WriteInt16LE(wav, 32, 2);              // BlockAlign
+            WriteInt16LE(wav, 34, 16);             // BitsPerSample
+
+            // data subchunk
+            wav[36] = (byte)'d'; wav[37] = (byte)'a'; wav[38] = (byte)'t'; wav[39] = (byte)'a';
+            WriteInt32LE(wav, 40, dataBytes);
+
+            Buffer.BlockCopy(pcm, 0, wav, 44, dataBytes);
+            return wav;
+        }
+
+        private static void WriteInt32LE(byte[] buf, int offset, int value)
+        {
+            buf[offset] = (byte)(value & 0xFF);
+            buf[offset + 1] = (byte)((value >> 8) & 0xFF);
+            buf[offset + 2] = (byte)((value >> 16) & 0xFF);
+            buf[offset + 3] = (byte)((value >> 24) & 0xFF);
+        }
+
+        private static void WriteInt16LE(byte[] buf, int offset, short value)
+        {
+            buf[offset] = (byte)(value & 0xFF);
+            buf[offset + 1] = (byte)((value >> 8) & 0xFF);
+        }
+    }
+
     public class Garage61LapManager
     {
-        public const int BUCKETS = 1000;
+        public const int BUCKETS = 2000;
 
         public string DriverName = "M. Van Der Berg";
         public float RefLapTimeSec = 136.412f;
@@ -364,11 +616,19 @@ namespace FreeOverlay
         public readonly List<CornerAuditItem> Audits = new List<CornerAuditItem>();
 
         private int _lastBucket = -1;
+        private float _lastPlayerBrake = 0f;
+        private float _lastPlayerThrottle = 0f;
         private bool _playerBrakingInZone = false;
         private int _activeZoneIdx = -1;
         public float CurrentBrakeSpotDeltaMeters = 0f;
         public bool HasCurrentBrakeSpotDelta = false;
         public float CurrentZonePlayerPeakBrake = 0f;
+
+        // Braking Audio Coach state (0 = idle, 1 = Prep1, 2 = Prep2, 3 = Prep3, 4 = BRAKE NOW!)
+        private int _audioZoneNumber = -1;
+        private int _audioStageFired = 0;
+        public int CurrentAudioStage = 0;
+        public float CurrentTimeToBrakeSec = 99f;
 
         public Garage61LapManager()
         {
@@ -625,25 +885,31 @@ namespace FreeOverlay
             }
         }
 
-        public float GetRefBrakeAtPct(float distPct)
+        private static float SampleCircularLerp(float[] arr, float distPct)
         {
             float wrapped = distPct - (float)Math.Floor(distPct);
-            int idx = Math.Max(0, Math.Min(BUCKETS - 1, (int)(wrapped * BUCKETS)));
-            return RefBrake[idx];
+            float exactPos = wrapped * BUCKETS;
+            int idx0 = (int)exactPos;
+            if (idx0 < 0) idx0 = 0;
+            else if (idx0 >= BUCKETS) idx0 = BUCKETS - 1;
+            int idx1 = (idx0 + 1) % BUCKETS;
+            float frac = exactPos - idx0;
+            return arr[idx0] + (arr[idx1] - arr[idx0]) * frac;
+        }
+
+        public float GetRefBrakeAtPct(float distPct)
+        {
+            return SampleCircularLerp(RefBrake, distPct);
         }
 
         public float GetRefThrottleAtPct(float distPct)
         {
-            float wrapped = distPct - (float)Math.Floor(distPct);
-            int idx = Math.Max(0, Math.Min(BUCKETS - 1, (int)(wrapped * BUCKETS)));
-            return RefThrottle[idx];
+            return SampleCircularLerp(RefThrottle, distPct);
         }
 
         public float GetRefSpeedAtPct(float distPct)
         {
-            float wrapped = distPct - (float)Math.Floor(distPct);
-            int idx = Math.Max(0, Math.Min(BUCKETS - 1, (int)(wrapped * BUCKETS)));
-            return RefSpeedKph[idx];
+            return SampleCircularLerp(RefSpeedKph, distPct);
         }
 
         public int GetRefGearAtPct(float distPct)
@@ -655,33 +921,41 @@ namespace FreeOverlay
 
         public float GetPlayerBrakeAtPct(float distPct)
         {
-            float wrapped = distPct - (float)Math.Floor(distPct);
-            int idx = Math.Max(0, Math.Min(BUCKETS - 1, (int)(wrapped * BUCKETS)));
-            return PlayerBrakeTrace[idx];
+            return SampleCircularLerp(PlayerBrakeTrace, distPct);
         }
 
         public float GetPlayerThrottleAtPct(float distPct)
         {
-            float wrapped = distPct - (float)Math.Floor(distPct);
-            int idx = Math.Max(0, Math.Min(BUCKETS - 1, (int)(wrapped * BUCKETS)));
-            return PlayerThrottleTrace[idx];
+            return SampleCircularLerp(PlayerThrottleTrace, distPct);
         }
 
         public void UpdatePlayerTelemetry(float distPct, float playerBrake, float playerThrottle, float trackLengthMeters)
+        {
+            UpdatePlayerTelemetry(distPct, playerBrake, playerThrottle, trackLengthMeters, 200f, false);
+        }
+
+        public void UpdatePlayerTelemetry(float distPct, float playerBrake, float playerThrottle, float trackLengthMeters, float playerSpeedKph, bool playAudioCues)
         {
             float wrapped = distPct - (float)Math.Floor(distPct);
             int b = Math.Max(0, Math.Min(BUCKETS - 1, (int)(wrapped * BUCKETS)));
 
             if (_lastBucket >= 0 && b != _lastBucket)
             {
-                int step = _lastBucket;
-                int guard = 0;
-                while (step != b && guard < 40)
+                int fwdDiff = (b - _lastBucket + BUCKETS) % BUCKETS;
+                if (fwdDiff >= 1 && fwdDiff <= 60)
                 {
-                    step = (step + 1) % BUCKETS;
-                    PlayerBrakeTrace[step] = playerBrake;
-                    PlayerThrottleTrace[step] = playerThrottle;
-                    guard++;
+                    for (int s = 1; s <= fwdDiff; s++)
+                    {
+                        int step = (_lastBucket + s) % BUCKETS;
+                        float t = (float)s / fwdDiff;
+                        PlayerBrakeTrace[step] = _lastPlayerBrake + (playerBrake - _lastPlayerBrake) * t;
+                        PlayerThrottleTrace[step] = _lastPlayerThrottle + (playerThrottle - _lastPlayerThrottle) * t;
+                    }
+                }
+                else
+                {
+                    PlayerBrakeTrace[b] = playerBrake;
+                    PlayerThrottleTrace[b] = playerThrottle;
                 }
             }
             else
@@ -690,6 +964,94 @@ namespace FreeOverlay
                 PlayerThrottleTrace[b] = playerThrottle;
             }
             _lastBucket = b;
+            _lastPlayerBrake = playerBrake;
+            _lastPlayerThrottle = playerThrottle;
+
+            float safeTrackLen = Math.Max(1000f, trackLengthMeters);
+
+            // Evaluate approaching braking zone for Audio & Visual Countdown Cues
+            float distToStartMeters;
+            BrakingZoneInfo relZone = GetRelevantZone(distPct, out distToStartMeters, safeTrackLen);
+            if (relZone != null)
+            {
+                float speedMps = Math.Max(18.0f, playerSpeedKph / 3.6f);
+                float timeToStartSec = distToStartMeters / speedMps;
+                CurrentTimeToBrakeSec = timeToStartSec;
+
+                if (relZone.ZoneNumber != _audioZoneNumber)
+                {
+                    _audioZoneNumber = relZone.ZoneNumber;
+                    _audioStageFired = 0;
+                }
+                else if (distToStartMeters > 150.0f && _audioStageFired >= 4)
+                {
+                    _audioStageFired = 0;
+                }
+
+                // Visual countdown stage (1 = 1.05s, 2 = 0.70s, 3 = 0.35s, 4 = BRAKE NOW!)
+                if (distToStartMeters <= 3.0f && distToStartMeters >= -45.0f)
+                {
+                    CurrentAudioStage = 4;
+                }
+                else if (distToStartMeters > 3.0f && timeToStartSec <= 0.36f)
+                {
+                    CurrentAudioStage = 3;
+                }
+                else if (distToStartMeters > 3.0f && timeToStartSec <= 0.72f)
+                {
+                    CurrentAudioStage = 2;
+                }
+                else if (distToStartMeters > 3.0f && timeToStartSec <= 1.08f)
+                {
+                    CurrentAudioStage = 1;
+                }
+                else
+                {
+                    CurrentAudioStage = 0;
+                }
+
+                // Fire rhythmic 3-2-1-BRAKE audio cues (350ms beat spacing leading into exact brake spot)
+                if (playAudioCues && playerSpeedKph >= 35.0f)
+                {
+                    if ((distToStartMeters <= 2.2f || timeToStartSec <= 0.035f) && distToStartMeters >= -16.0f)
+                    {
+                        if (_audioStageFired < 4)
+                        {
+                            _audioStageFired = 4;
+                            BrakingAudioCoach.PlayBrakeNow(relZone.PeakBrake >= 55.0f);
+                        }
+                    }
+                    else if (distToStartMeters > 2.2f && timeToStartSec <= 0.36f && timeToStartSec > 0.07f)
+                    {
+                        if (_audioStageFired < 3)
+                        {
+                            _audioStageFired = 3;
+                            BrakingAudioCoach.PlayPrepBeep(3);
+                        }
+                    }
+                    else if (distToStartMeters > 2.2f && timeToStartSec <= 0.72f && timeToStartSec > 0.40f)
+                    {
+                        if (_audioStageFired < 2)
+                        {
+                            _audioStageFired = 2;
+                            BrakingAudioCoach.PlayPrepBeep(2);
+                        }
+                    }
+                    else if (distToStartMeters > 2.2f && timeToStartSec <= 1.08f && timeToStartSec > 0.75f)
+                    {
+                        if (_audioStageFired < 1)
+                        {
+                            _audioStageFired = 1;
+                            BrakingAudioCoach.PlayPrepBeep(1);
+                        }
+                    }
+                }
+            }
+            else
+            {
+                CurrentAudioStage = 0;
+                CurrentTimeToBrakeSec = 99f;
+            }
 
             // Find current or approaching braking zone
             int foundZone = -1;
@@ -719,7 +1081,7 @@ namespace FreeOverlay
                 if (!_playerBrakingInZone && playerBrake >= 6.0f)
                 {
                     _playerBrakingInZone = true;
-                    CurrentBrakeSpotDeltaMeters = (wrapped - z.StartPct) * Math.Max(1000f, trackLengthMeters);
+                    CurrentBrakeSpotDeltaMeters = (wrapped - z.StartPct) * safeTrackLen;
                     HasCurrentBrakeSpotDelta = true;
                 }
 
@@ -1209,6 +1571,42 @@ namespace FreeOverlay
 
     public class LiveIracingReader
     {
+        private class CachedYamlDriver
+        {
+            public int CarIdx;
+            public string CarNumber;
+            public string UserName;
+            public string ClubName;
+            public string CountryCode;
+            public int IRating;
+            public string LicClass;
+            public string SafetyRating;
+        }
+
+        private MemoryMappedFile _mmf;
+        private MemoryMappedViewAccessor _acc;
+
+        private int _cachedSessionInfoUpdate = -1;
+        private int _cachedSessionInfoLen = -1;
+        private int _cachedSessionInfoOffset = -1;
+        private int _cachedSessionNum = -1;
+        private string _cachedYaml = string.Empty;
+        private string _cachedTrackName = "iRacing Circuit";
+        private string _cachedSessionType = "RACE";
+        private float _cachedTrackLenMeters = 5000f;
+        private float[] _cachedSectorPcts = new float[] { 0.0f, 0.333333f, 0.666667f };
+        private readonly List<CachedYamlDriver> _cachedYamlDrivers = new List<CachedYamlDriver>();
+
+        private byte[] _varHeadersBuf;
+        private byte[] _dataBuf;
+        private readonly int[] _pos = new int[64];
+        private readonly int[] _lap = new int[64];
+        private readonly float[] _lastLap = new float[64];
+        private readonly float[] _bestLap = new float[64];
+        private readonly float[] _lapDist = new float[64];
+        private readonly float[] _f2Time = new float[64];
+        private readonly bool[] _onPit = new bool[64];
+
         private int _lastSectorIdx = 0;
         private int _cachedSectorCount = 0;
         private float[] _secStartBest = new float[0];
@@ -1227,6 +1625,21 @@ namespace FreeOverlay
         private float _prevDeltaPers = 0f;
         private float _prevDeltaLast = 0f;
 
+        private void CloseMapping()
+        {
+            if (_acc != null)
+            {
+                try { _acc.Dispose(); } catch { }
+                _acc = null;
+            }
+            if (_mmf != null)
+            {
+                try { _mmf.Dispose(); } catch { }
+                _mmf = null;
+            }
+            _cachedSessionInfoUpdate = -1;
+        }
+
         private static string ReadCString(byte[] buf, int offset, int maxLen)
         {
             int end = offset;
@@ -1238,9 +1651,52 @@ namespace FreeOverlay
 
         private static string ExtractYamlField(string chunk, string key, string defVal)
         {
-            Match m = Regex.Match(chunk, @"^\s*" + key + @":\s*(.+)$", RegexOptions.Multiline);
+            Match m = Regex.Match(chunk, @"^[ \t]*" + Regex.Escape(key) + @":[ \t]*([^\r\n]*)$", RegexOptions.Multiline);
             if (!m.Success) return defVal;
-            return m.Groups[1].Value.Trim().Trim('"', '\'');
+            string val = m.Groups[1].Value.Trim().Trim('"', '\'');
+            if (string.IsNullOrEmpty(val) || string.Equals(val, "-none-", StringComparison.OrdinalIgnoreCase))
+                return defVal;
+            return val;
+        }
+
+        private static string ExtractTopLevelYamlSection(string yaml, string sectionName)
+        {
+            Match startMatch = Regex.Match(yaml, @"(?:^|\r?\n)" + Regex.Escape(sectionName) + @":[ \t]*\r?\n");
+            if (!startMatch.Success) return string.Empty;
+            int contentStart = startMatch.Index + startMatch.Length;
+            string tail = yaml.Substring(contentStart);
+            Match nextTop = Regex.Match(tail, @"\r?\n(?:[A-Za-z0-9_]+:|\.\.\.)");
+            return nextTop.Success ? tail.Substring(0, nextTop.Index) : tail;
+        }
+
+        private static string ExtractSessionTypeFromYaml(string yaml, int sessionNum)
+        {
+            string sessionInfo = ExtractTopLevelYamlSection(yaml, "SessionInfo");
+            if (string.IsNullOrEmpty(sessionInfo)) return "RACE";
+
+            string[] sessionBlocks = Regex.Split(sessionInfo, @"(?:^|\r?\n)[ \t]*-[ \t]*SessionNum:");
+            string activeChunk = string.Empty;
+            for (int i = 1; i < sessionBlocks.Length; i++)
+            {
+                string chunk = "SessionNum:" + sessionBlocks[i];
+                int sNum;
+                if (int.TryParse(ExtractYamlField(chunk, "SessionNum", "-1"), out sNum) && sNum == sessionNum)
+                {
+                    activeChunk = chunk;
+                    break;
+                }
+                activeChunk = chunk;
+            }
+
+            string rawType = ExtractYamlField(activeChunk, "SessionType", "Race");
+            if (rawType.IndexOf("Prac", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                rawType.IndexOf("Test", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "PRAC";
+            if (rawType.IndexOf("Qual", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "QUAL";
+            if (rawType.IndexOf("Warm", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "WARM";
+            return "RACE";
         }
 
         /// <summary>
@@ -1290,384 +1746,481 @@ namespace FreeOverlay
             return new float[] { 0.0f, 0.333333f, 0.666667f };
         }
 
+        private void RefreshYamlCache(string yaml, int sessionNum)
+        {
+            _cachedYaml = yaml;
+            _cachedSessionNum = sessionNum;
+            _cachedTrackName = ExtractYamlField(yaml, "TrackDisplayName", "iRacing Circuit");
+            _cachedSessionType = ExtractSessionTypeFromYaml(yaml, sessionNum);
+            _cachedSectorPcts = ExtractTrackSectorsFromYaml(yaml);
+
+            float trackLenMeters = 5000f;
+            string rawLen = ExtractYamlField(yaml, "TrackLength", "5.00 km");
+            Match lenMatch = Regex.Match(rawLen, @"([0-9]+(?:\.[0-9]+)?)\s*(km|mi)?", RegexOptions.IgnoreCase);
+            if (lenMatch.Success)
+            {
+                float parsedLen;
+                if (float.TryParse(lenMatch.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out parsedLen))
+                {
+                    string unit = lenMatch.Groups[2].Value.ToLowerInvariant();
+                    if (unit == "mi") trackLenMeters = parsedLen * 1609.34f;
+                    else trackLenMeters = parsedLen * 1000.0f;
+                }
+            }
+            _cachedTrackLenMeters = Math.Max(500f, trackLenMeters);
+
+            _cachedYamlDrivers.Clear();
+            string driverInfoSection = ExtractTopLevelYamlSection(yaml, "DriverInfo");
+            if (string.IsNullOrEmpty(driverInfoSection)) return;
+
+            int paceCarIdx = -1;
+            int.TryParse(ExtractYamlField(driverInfoSection, "PaceCarIdx", "-1"), out paceCarIdx);
+
+            Match driversHeaderMatch = Regex.Match(driverInfoSection, @"(?:^|\r?\n)([ \t]+)Drivers:[ \t]*\r?\n");
+            if (!driversHeaderMatch.Success) return;
+
+            string driversIndent = driversHeaderMatch.Groups[1].Value;
+            string driversTail = driverInfoSection.Substring(driversHeaderMatch.Index + driversHeaderMatch.Length);
+            Match nextSiblingKey = Regex.Match(driversTail, @"\r?\n" + Regex.Escape(driversIndent) + @"[A-Za-z0-9_]+:");
+            string driversSection = "\n" + (nextSiblingKey.Success ? driversTail.Substring(0, nextSiblingKey.Index) : driversTail);
+
+            string[] blocks = Regex.Split(driversSection, @"\r?\n[ \t]*-[ \t]*CarIdx:");
+            HashSet<int> seenCarIdx = new HashSet<int>();
+
+            for (int i = 1; i < blocks.Length; i++)
+            {
+                string chunk = "CarIdx:" + blocks[i];
+                if (ExtractYamlField(chunk, "CarIsPaceCar", "0") == "1") continue;
+                if (ExtractYamlField(chunk, "IsSpectator", "0") == "1") continue;
+
+                int cIdx;
+                if (!int.TryParse(ExtractYamlField(chunk, "CarIdx", "-1"), out cIdx)) continue;
+                if (cIdx < 0 || cIdx >= 64) continue;
+                if (cIdx == paceCarIdx || seenCarIdx.Contains(cIdx)) continue;
+
+                string userName = ExtractYamlField(chunk, "UserName", string.Empty);
+                if (string.IsNullOrEmpty(userName) ||
+                    string.Equals(userName, "Pace Car", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                seenCarIdx.Add(cIdx);
+
+                int ir;
+                if (!int.TryParse(ExtractYamlField(chunk, "IRating", "1350"), out ir)) ir = 1350;
+
+                string licRaw = ExtractYamlField(chunk, "LicString", "R 2.50");
+                string licClass = "R";
+                string srVal = "2.50";
+                Match lm = Regex.Match(licRaw, @"^([RDCBAP])\s*([0-9]+\.[0-9]{2})", RegexOptions.IgnoreCase);
+                if (lm.Success)
+                {
+                    licClass = lm.Groups[1].Value.ToUpperInvariant();
+                    srVal = lm.Groups[2].Value;
+                }
+
+                string club = ExtractYamlField(chunk, "ClubName", ExtractYamlField(chunk, "FlairName", "International"));
+
+                CachedYamlDriver cd = new CachedYamlDriver();
+                cd.CarIdx = cIdx;
+                cd.CarNumber = ExtractYamlField(chunk, "CarNumber", cIdx.ToString());
+                cd.UserName = userName;
+                cd.ClubName = club;
+                cd.CountryCode = CountryResolver.Resolve(club, null);
+                cd.IRating = ir;
+                cd.LicClass = licClass;
+                cd.SafetyRating = srVal;
+                _cachedYamlDrivers.Add(cd);
+            }
+        }
+
         public SessionSnapshot TryReadLive()
         {
             try
             {
-                using (MemoryMappedFile mmf = MemoryMappedFile.OpenExisting("Local\\IRSDKMemMapFileName", MemoryMappedFileRights.Read))
+                if (_mmf == null || _acc == null)
                 {
-                    using (MemoryMappedViewAccessor acc = mmf.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read))
+                    CloseMapping();
+                    _mmf = MemoryMappedFile.OpenExisting("Local\\IRSDKMemMapFileName", MemoryMappedFileRights.Read);
+                    _acc = _mmf.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
+                }
+
+                int status = _acc.ReadInt32(4);
+                if ((status & 1) == 0)
+                {
+                    return null;
+                }
+
+                int sessionInfoUpdate = _acc.ReadInt32(12);
+                int sessionInfoLen = _acc.ReadInt32(16);
+                int sessionInfoOffset = _acc.ReadInt32(20);
+                int numVars = _acc.ReadInt32(24);
+                int varHeaderOffset = _acc.ReadInt32(28);
+                int numBuf = _acc.ReadInt32(32);
+                int bufLen = _acc.ReadInt32(36);
+
+                if (numVars <= 0 || bufLen <= 0 || sessionInfoLen <= 0) return null;
+
+                int bestTick = -1;
+                int bestBufOffset = 0;
+                for (int i = 0; i < numBuf && i < 4; i++)
+                {
+                    int bOff = 48 + i * 16;
+                    int tick = _acc.ReadInt32(bOff);
+                    int off = _acc.ReadInt32(bOff + 4);
+                    if (tick > bestTick)
                     {
-                        int status = acc.ReadInt32(4);
-                        if ((status & 1) == 0) return null;
-
-                        int sessionInfoLen = acc.ReadInt32(16);
-                        int sessionInfoOffset = acc.ReadInt32(20);
-                        int numVars = acc.ReadInt32(24);
-                        int varHeaderOffset = acc.ReadInt32(28);
-                        int numBuf = acc.ReadInt32(32);
-                        int bufLen = acc.ReadInt32(36);
-
-                        if (numVars <= 0 || bufLen <= 0 || sessionInfoLen <= 0) return null;
-
-                        int bestTick = -1;
-                        int bestBufOffset = 0;
-                        for (int i = 0; i < numBuf && i < 4; i++)
-                        {
-                            int bOff = 48 + i * 16;
-                            int tick = acc.ReadInt32(bOff);
-                            int off = acc.ReadInt32(bOff + 4);
-                            if (tick > bestTick)
-                            {
-                                bestTick = tick;
-                                bestBufOffset = off;
-                            }
-                        }
-
-                        byte[] yamlBytes = new byte[sessionInfoLen];
-                        acc.ReadArray(sessionInfoOffset, yamlBytes, 0, sessionInfoLen);
-                        string yaml = ReadCString(yamlBytes, 0, sessionInfoLen);
-
-                        byte[] varHeaders = new byte[numVars * 144];
-                        acc.ReadArray(varHeaderOffset, varHeaders, 0, varHeaders.Length);
-
-                        byte[] dataBuf = new byte[bufLen];
-                        acc.ReadArray(bestBufOffset, dataBuf, 0, bufLen);
-
-                        int playerCarIdx = 0;
-                        int playerTrackSurface = 3;
-                        double sessionTimeRemain = 0;
-                        int sessionLapsRemain = 0;
-                        float trackTemp = 32f;
-
-                        // Native 60Hz Delta Bar variables from iRacing SDK
-                        float deltaSessionBest = 0f;
-                        float deltaSessionBestDD = 0f;
-                        float lapBestLapTime = 0f;
-
-                        float deltaSessionOpt = 0f;
-                        float deltaSessionOptDD = 0f;
-
-                        float deltaBest = 0f;
-                        float deltaBestDD = 0f;
-
-                        float deltaLast = 0f;
-                        float deltaLastDD = 0f;
-                        float lapLastLapTime = 0f;
-
-                        // Player live pedal, speed, gear & distance telemetry for Garage61 Braking Coach
-                        float playerBrakeRaw = 0f;
-                        float playerThrottleRaw = 0f;
-                        float playerSpeedMs = 0f;
-                        int playerGearVal = 0;
-                        float scalarLapDistPct = -1f;
-
-                        int[] pos = new int[64];
-                        int[] lap = new int[64];
-                        float[] lastLap = new float[64];
-                        float[] bestLap = new float[64];
-                        float[] lapDist = new float[64];
-                        float[] f2Time = new float[64];
-                        bool[] onPit = new bool[64];
-
-                        for (int v = 0; v < numVars; v++)
-                        {
-                            int hOff = v * 144;
-                            int vOffset = BitConverter.ToInt32(varHeaders, hOff + 4);
-                            int vCount = BitConverter.ToInt32(varHeaders, hOff + 8);
-                            string vName = ReadCString(varHeaders, hOff + 16, 32);
-
-                            if (vName == "PlayerCarIdx") playerCarIdx = BitConverter.ToInt32(dataBuf, vOffset);
-                            else if (vName == "PlayerTrackSurface") playerTrackSurface = BitConverter.ToInt32(dataBuf, vOffset);
-                            else if (vName == "SessionTimeRemain") sessionTimeRemain = BitConverter.ToDouble(dataBuf, vOffset);
-                            else if (vName == "SessionLapsRemainEx") sessionLapsRemain = BitConverter.ToInt32(dataBuf, vOffset);
-                            else if (vName == "TrackTempCrew") trackTemp = BitConverter.ToSingle(dataBuf, vOffset);
-                            else if (vName == "LapDeltaToSessionBestLap") deltaSessionBest = BitConverter.ToSingle(dataBuf, vOffset);
-                            else if (vName == "LapDeltaToSessionBestLap_DD") deltaSessionBestDD = BitConverter.ToSingle(dataBuf, vOffset);
-                            else if (vName == "LapBestLapTime") lapBestLapTime = BitConverter.ToSingle(dataBuf, vOffset);
-                            else if (vName == "LapDeltaToSessionOptimalLap") deltaSessionOpt = BitConverter.ToSingle(dataBuf, vOffset);
-                            else if (vName == "LapDeltaToSessionOptimalLap_DD") deltaSessionOptDD = BitConverter.ToSingle(dataBuf, vOffset);
-                            else if (vName == "LapDeltaToBestLap") deltaBest = BitConverter.ToSingle(dataBuf, vOffset);
-                            else if (vName == "LapDeltaToBestLap_DD") deltaBestDD = BitConverter.ToSingle(dataBuf, vOffset);
-                            else if (vName == "LapDeltaToSessionLastLap") deltaLast = BitConverter.ToSingle(dataBuf, vOffset);
-                            else if (vName == "LapDeltaToSessionLastLap_DD") deltaLastDD = BitConverter.ToSingle(dataBuf, vOffset);
-                            else if (vName == "LapLastLapTime") lapLastLapTime = BitConverter.ToSingle(dataBuf, vOffset);
-                            else if (vName == "Brake") playerBrakeRaw = BitConverter.ToSingle(dataBuf, vOffset);
-                            else if (vName == "Throttle") playerThrottleRaw = BitConverter.ToSingle(dataBuf, vOffset);
-                            else if (vName == "Speed") playerSpeedMs = BitConverter.ToSingle(dataBuf, vOffset);
-                            else if (vName == "Gear") playerGearVal = BitConverter.ToInt32(dataBuf, vOffset);
-                            else if (vName == "LapDistPct") scalarLapDistPct = BitConverter.ToSingle(dataBuf, vOffset);
-                            else if (vName == "CarIdxPosition")
-                            {
-                                for (int c = 0; c < Math.Min(64, vCount); c++) pos[c] = BitConverter.ToInt32(dataBuf, vOffset + c * 4);
-                            }
-                            else if (vName == "CarIdxLap")
-                            {
-                                for (int c = 0; c < Math.Min(64, vCount); c++) lap[c] = BitConverter.ToInt32(dataBuf, vOffset + c * 4);
-                            }
-                            else if (vName == "CarIdxLastLapTime")
-                            {
-                                for (int c = 0; c < Math.Min(64, vCount); c++) lastLap[c] = BitConverter.ToSingle(dataBuf, vOffset + c * 4);
-                            }
-                            else if (vName == "CarIdxBestLapTime")
-                            {
-                                for (int c = 0; c < Math.Min(64, vCount); c++) bestLap[c] = BitConverter.ToSingle(dataBuf, vOffset + c * 4);
-                            }
-                            else if (vName == "CarIdxLapDistPct")
-                            {
-                                for (int c = 0; c < Math.Min(64, vCount); c++) lapDist[c] = BitConverter.ToSingle(dataBuf, vOffset + c * 4);
-                            }
-                            else if (vName == "CarIdxF2Time")
-                            {
-                                for (int c = 0; c < Math.Min(64, vCount); c++) f2Time[c] = BitConverter.ToSingle(dataBuf, vOffset + c * 4);
-                            }
-                            else if (vName == "CarIdxOnPitRoad")
-                            {
-                                for (int c = 0; c < Math.Min(64, vCount); c++) onPit[c] = dataBuf[vOffset + c] != 0;
-                            }
-                        }
-
-                        string trackName = ExtractYamlField(yaml, "TrackDisplayName", "iRacing Circuit");
-                        int driversIdx = yaml.IndexOf("Drivers:");
-                        if (driversIdx < 0) return null;
-
-                        string driversSection = yaml.Substring(driversIdx);
-                        string[] blocks = Regex.Split(driversSection, @"\r?\n\s*-\s*CarIdx:");
-                        List<DriverRow> rows = new List<DriverRow>();
-                        float sessionBest = float.MaxValue;
-
-                        for (int i = 1; i < blocks.Length; i++)
-                        {
-                            string chunk = "CarIdx:" + blocks[i];
-                            if (ExtractYamlField(chunk, "CarIsPaceCar", "0") == "1") continue;
-                            if (ExtractYamlField(chunk, "IsSpectator", "0") == "1") continue;
-
-                            int cIdx;
-                            if (!int.TryParse(ExtractYamlField(chunk, "CarIdx", "0"), out cIdx)) continue;
-                            if (cIdx < 0 || cIdx >= 64) continue;
-
-                            int ir;
-                            if (!int.TryParse(ExtractYamlField(chunk, "IRating", "1350"), out ir)) ir = 1350;
-
-                            string licRaw = ExtractYamlField(chunk, "LicString", "R 2.50");
-                            string licClass = "R";
-                            string srVal = "2.50";
-                            Match lm = Regex.Match(licRaw, @"^([RDCBAP])\s*([0-9]+\.[0-9]{2})", RegexOptions.IgnoreCase);
-                            if (lm.Success)
-                            {
-                                licClass = lm.Groups[1].Value.ToUpperInvariant();
-                                srVal = lm.Groups[2].Value;
-                            }
-
-                            string club = ExtractYamlField(chunk, "ClubName", ExtractYamlField(chunk, "FlairName", "International"));
-                            float bLap = bestLap[cIdx];
-                            if (bLap > 0f && bLap < sessionBest) sessionBest = bLap;
-
-                            DriverRow row = new DriverRow();
-                            row.CarIdx = cIdx;
-                            row.Position = pos[cIdx];
-                            row.CarNumber = ExtractYamlField(chunk, "CarNumber", cIdx.ToString());
-                            row.UserName = ExtractYamlField(chunk, "UserName", "Driver #" + cIdx);
-                            row.ClubName = club;
-                            row.CountryCode = CountryResolver.Resolve(club, null);
-                            row.IRating = ir;
-                            row.LicClass = licClass;
-                            row.SafetyRating = srVal;
-                            row.LastLapSec = lastLap[cIdx] > 0f ? lastLap[cIdx] : 0f;
-                            row.BestLapSec = bLap > 0f ? bLap : 0f;
-                            row.GapToLeaderSec = Math.Max(0f, f2Time[cIdx]);
-                            row.Lap = lap[cIdx];
-                            row.LapDistPct = lapDist[cIdx];
-                            row.OnPitRoad = onPit[cIdx];
-                            row.IsPlayer = (cIdx == playerCarIdx);
-                            rows.Add(row);
-                        }
-
-                        if (rows.Count == 0) return null;
-
-                        rows.Sort(delegate(DriverRow a, DriverRow b)
-                        {
-                            if (a.Position > 0 && b.Position > 0) return a.Position.CompareTo(b.Position);
-                            if (a.Position > 0) return -1;
-                            if (b.Position > 0) return 1;
-                            float progA = a.Lap + a.LapDistPct;
-                            float progB = b.Lap + b.LapDistPct;
-                            if (Math.Abs(progA - progB) > 0.001f) return progB.CompareTo(progA);
-                            return b.IRating.CompareTo(a.IRating);
-                        });
-
-                        int irSum = 0;
-                        for (int i = 0; i < rows.Count; i++) irSum += rows[i].IRating;
-                        int sof = irSum / rows.Count;
-
-                        int maxLap = 1;
-                        for (int i = 0; i < rows.Count; i++)
-                        {
-                            DriverRow d = rows[i];
-                            d.Position = i + 1;
-                            if (d.Lap > maxLap) maxLap = d.Lap;
-                            if (i == 0)
-                            {
-                                d.GapToLeaderSec = 0f;
-                                d.IntervalAheadSec = 0f;
-                            }
-                            else
-                            {
-                                d.IntervalAheadSec = Math.Max(0f, d.GapToLeaderSec - rows[i - 1].GapToLeaderSec);
-                            }
-
-                            if (d.LastLapSec > 0f && Math.Abs(d.LastLapSec - sessionBest) < 0.003f)
-                                d.LastLapStatus = LapStatus.SessionBest;
-                            else if (d.LastLapSec > 0f && d.BestLapSec > 0f && Math.Abs(d.LastLapSec - d.BestLapSec) < 0.003f)
-                                d.LastLapStatus = LapStatus.PersonalBest;
-                            else
-                                d.LastLapStatus = LapStatus.Normal;
-
-                            d.IRatingDelta = CountryResolver.EstimateIRatingDelta(d.Position, rows.Count, d.IRating, sof);
-                        }
-
-                        // Pull official track sectors from iRacing SDK YAML (SplitTimeInfo -> Sectors)
-                        float[] sectorPcts = ExtractTrackSectorsFromYaml(yaml);
-                        int secCount = sectorPcts.Length;
-                        if (secCount != _cachedSectorCount)
-                        {
-                            _cachedSectorCount = secCount;
-                            _secStartBest = new float[secCount];
-                            _secStartOpt = new float[secCount];
-                            _secStartPers = new float[secCount];
-                            _secStartLast = new float[secCount];
-                            _secSplitBest = new float[secCount];
-                            _secSplitOpt = new float[secCount];
-                            _secSplitPers = new float[secCount];
-                            _secSplitLast = new float[secCount];
-                            _secDone = new bool[secCount];
-                            _lastSectorIdx = 0;
-                        }
-
-                        float playerPct = (playerCarIdx >= 0 && playerCarIdx < 64) ? lapDist[playerCarIdx] : 0f;
-                        int curSecIdx = 0;
-                        for (int sIdx = secCount - 1; sIdx >= 0; sIdx--)
-                        {
-                            if (playerPct >= sectorPcts[sIdx])
-                            {
-                                curSecIdx = sIdx;
-                                break;
-                            }
-                        }
-
-                        if (curSecIdx != _lastSectorIdx)
-                        {
-                            if (curSecIdx > _lastSectorIdx)
-                            {
-                                // Completed _lastSectorIdx on track -> lock its split and record start boundary for curSecIdx
-                                _secSplitBest[_lastSectorIdx] = deltaSessionBest - _secStartBest[_lastSectorIdx];
-                                _secSplitOpt[_lastSectorIdx] = deltaSessionOpt - _secStartOpt[_lastSectorIdx];
-                                _secSplitPers[_lastSectorIdx] = deltaBest - _secStartPers[_lastSectorIdx];
-                                _secSplitLast[_lastSectorIdx] = deltaLast - _secStartLast[_lastSectorIdx];
-                                _secDone[_lastSectorIdx] = true;
-
-                                _secStartBest[curSecIdx] = deltaSessionBest;
-                                _secStartOpt[curSecIdx] = deltaSessionOpt;
-                                _secStartPers[curSecIdx] = deltaBest;
-                                _secStartLast[curSecIdx] = deltaLast;
-                            }
-                            else if (curSecIdx == 0)
-                            {
-                                // Crossed Start/Finish into Sector 1 -> lock final sector from just before S/F reset
-                                int finalIdx = secCount - 1;
-                                _secSplitBest[finalIdx] = _prevDeltaBest - _secStartBest[finalIdx];
-                                _secSplitOpt[finalIdx] = _prevDeltaOpt - _secStartOpt[finalIdx];
-                                _secSplitPers[finalIdx] = _prevDeltaPers - _secStartPers[finalIdx];
-                                _secSplitLast[finalIdx] = _prevDeltaLast - _secStartLast[finalIdx];
-                                _secDone[finalIdx] = true;
-
-                                for (int k = 0; k < secCount - 1; k++)
-                                {
-                                    _secDone[k] = false;
-                                    _secStartBest[k] = 0f;
-                                    _secStartOpt[k] = 0f;
-                                    _secStartPers[k] = 0f;
-                                    _secStartLast[k] = 0f;
-                                }
-                            }
-                            _lastSectorIdx = curSecIdx;
-                        }
-
-                        // Continuously update active sector's live split at 60Hz
-                        _secSplitBest[curSecIdx] = deltaSessionBest - _secStartBest[curSecIdx];
-                        _secSplitOpt[curSecIdx] = deltaSessionOpt - _secStartOpt[curSecIdx];
-                        _secSplitPers[curSecIdx] = deltaBest - _secStartPers[curSecIdx];
-                        _secSplitLast[curSecIdx] = deltaLast - _secStartLast[curSecIdx];
-
-                        _prevDeltaBest = deltaSessionBest;
-                        _prevDeltaOpt = deltaSessionOpt;
-                        _prevDeltaPers = deltaBest;
-                        _prevDeltaLast = deltaLast;
-
-                        DeltaTelemetryData dt = new DeltaTelemetryData();
-                        dt.SessionBestLapSec = lapBestLapTime > 0f ? lapBestLapTime : (sessionBest < float.MaxValue ? sessionBest : 0f);
-                        dt.DeltaSessionBestSec = deltaSessionBest;
-                        dt.DeltaSessionBestRate = deltaSessionBestDD;
-
-                        dt.SessionOptimalLapSec = dt.SessionBestLapSec > 0f ? Math.Max(0f, dt.SessionBestLapSec - (deltaSessionOpt - deltaSessionBest)) : 0f;
-                        dt.DeltaSessionOptimalSec = deltaSessionOpt;
-                        dt.DeltaSessionOptimalRate = deltaSessionOptDD;
-
-                        dt.PersonalBestLapSec = dt.SessionBestLapSec;
-                        dt.DeltaPersonalBestSec = deltaBest;
-                        dt.DeltaPersonalBestRate = deltaBestDD;
-
-                        dt.LastLapSec = lapLastLapTime;
-                        dt.DeltaLastLapSec = deltaLast;
-                        dt.DeltaLastLapRate = deltaLastDD;
-
-                        dt.SectorStartPcts = sectorPcts;
-                        dt.ActiveSectorIndex = curSecIdx;
-                        dt.SectorDeltasSessionBest = (float[])_secSplitBest.Clone();
-                        dt.SectorDeltasOptimal = (float[])_secSplitOpt.Clone();
-                        dt.SectorDeltasPersonalBest = (float[])_secSplitPers.Clone();
-                        dt.SectorDeltasLastLap = (float[])_secSplitLast.Clone();
-                        dt.SectorDone = (bool[])_secDone.Clone();
-                        dt.OffTrack = (playerTrackSurface == 0);
-
-                        float trackLenMeters = 5000f;
-                        string rawLen = ExtractYamlField(yaml, "TrackLength", "5.00 km");
-                        Match lenMatch = Regex.Match(rawLen, @"([0-9]+(?:\.[0-9]+)?)\s*(km|mi)?", RegexOptions.IgnoreCase);
-                        if (lenMatch.Success)
-                        {
-                            float parsedLen;
-                            if (float.TryParse(lenMatch.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out parsedLen))
-                            {
-                                string unit = lenMatch.Groups[2].Value.ToLowerInvariant();
-                                if (unit == "mi") trackLenMeters = parsedLen * 1609.34f;
-                                else trackLenMeters = parsedLen * 1000.0f;
-                            }
-                        }
-
-                        SessionSnapshot snap = new SessionSnapshot();
-                        snap.Connected = true;
-                        snap.IsLiveSource = true;
-                        snap.TrackName = trackName;
-                        snap.SessionType = "RACE";
-                        snap.StrengthOfField = sof;
-                        snap.CurrentLap = maxLap;
-                        snap.TotalLaps = Math.Max(0, sessionLapsRemain);
-                        snap.SessionTimeRemainSec = Math.Max(0.0, sessionTimeRemain);
-                        snap.TrackTempC = trackTemp;
-                        snap.Drivers = rows;
-                        snap.Delta = dt;
-                        snap.PlayerLapDistPct = scalarLapDistPct >= 0f ? scalarLapDistPct : playerPct;
-                        snap.TrackLengthMeters = Math.Max(500f, trackLenMeters);
-                        snap.PlayerBrakePct = Math.Max(0f, Math.Min(100f, playerBrakeRaw * 100.0f));
-                        snap.PlayerThrottlePct = Math.Max(0f, Math.Min(100f, playerThrottleRaw * 100.0f));
-                        snap.PlayerSpeedKph = Math.Max(0f, playerSpeedMs * 3.6f);
-                        snap.PlayerGear = playerGearVal;
-                        return snap;
+                        bestTick = tick;
+                        bestBufOffset = off;
                     }
                 }
+
+                int headersLen = numVars * 144;
+                if (_varHeadersBuf == null || _varHeadersBuf.Length != headersLen)
+                    _varHeadersBuf = new byte[headersLen];
+                _acc.ReadArray(varHeaderOffset, _varHeadersBuf, 0, headersLen);
+
+                if (_dataBuf == null || _dataBuf.Length != bufLen)
+                    _dataBuf = new byte[bufLen];
+                _acc.ReadArray(bestBufOffset, _dataBuf, 0, bufLen);
+
+                Array.Clear(_pos, 0, 64);
+                Array.Clear(_lap, 0, 64);
+                Array.Clear(_lastLap, 0, 64);
+                Array.Clear(_bestLap, 0, 64);
+                Array.Clear(_lapDist, 0, 64);
+                Array.Clear(_f2Time, 0, 64);
+                Array.Clear(_onPit, 0, 64);
+
+                int playerCarIdx = 0;
+                int playerTrackSurface = 3;
+                int sessionNum = 0;
+                double sessionTimeRemain = 0;
+                int sessionLapsRemain = 0;
+                float trackTemp = 32f;
+
+                // Native 60Hz Delta Bar variables from iRacing SDK
+                float deltaSessionBest = 0f;
+                float deltaSessionBestDD = 0f;
+                float lapBestLapTime = 0f;
+
+                float deltaSessionOpt = 0f;
+                float deltaSessionOptDD = 0f;
+
+                float deltaBest = 0f;
+                float deltaBestDD = 0f;
+
+                float deltaLast = 0f;
+                float deltaLastDD = 0f;
+                float lapLastLapTime = 0f;
+
+                // Player live pedal, speed, gear & distance telemetry for Garage61 Braking Coach
+                float playerBrakeRaw = 0f;
+                float playerThrottleRaw = 0f;
+                float playerSpeedMs = 0f;
+                int playerGearVal = 0;
+                float scalarLapDistPct = -1f;
+
+                for (int v = 0; v < numVars; v++)
+                {
+                    int hOff = v * 144;
+                    int vOffset = BitConverter.ToInt32(_varHeadersBuf, hOff + 4);
+                    int vCount = BitConverter.ToInt32(_varHeadersBuf, hOff + 8);
+                    string vName = ReadCString(_varHeadersBuf, hOff + 16, 32);
+
+                    if (vName == "PlayerCarIdx") playerCarIdx = BitConverter.ToInt32(_dataBuf, vOffset);
+                    else if (vName == "PlayerTrackSurface") playerTrackSurface = BitConverter.ToInt32(_dataBuf, vOffset);
+                    else if (vName == "SessionNum") sessionNum = BitConverter.ToInt32(_dataBuf, vOffset);
+                    else if (vName == "SessionTimeRemain") sessionTimeRemain = BitConverter.ToDouble(_dataBuf, vOffset);
+                    else if (vName == "SessionLapsRemainEx") sessionLapsRemain = BitConverter.ToInt32(_dataBuf, vOffset);
+                    else if (vName == "TrackTempCrew") trackTemp = BitConverter.ToSingle(_dataBuf, vOffset);
+                    else if (vName == "LapDeltaToSessionBestLap") deltaSessionBest = BitConverter.ToSingle(_dataBuf, vOffset);
+                    else if (vName == "LapDeltaToSessionBestLap_DD") deltaSessionBestDD = BitConverter.ToSingle(_dataBuf, vOffset);
+                    else if (vName == "LapBestLapTime") lapBestLapTime = BitConverter.ToSingle(_dataBuf, vOffset);
+                    else if (vName == "LapDeltaToSessionOptimalLap") deltaSessionOpt = BitConverter.ToSingle(_dataBuf, vOffset);
+                    else if (vName == "LapDeltaToSessionOptimalLap_DD") deltaSessionOptDD = BitConverter.ToSingle(_dataBuf, vOffset);
+                    else if (vName == "LapDeltaToBestLap") deltaBest = BitConverter.ToSingle(_dataBuf, vOffset);
+                    else if (vName == "LapDeltaToBestLap_DD") deltaBestDD = BitConverter.ToSingle(_dataBuf, vOffset);
+                    else if (vName == "LapDeltaToSessionLastLap") deltaLast = BitConverter.ToSingle(_dataBuf, vOffset);
+                    else if (vName == "LapDeltaToSessionLastLap_DD") deltaLastDD = BitConverter.ToSingle(_dataBuf, vOffset);
+                    else if (vName == "LapLastLapTime") lapLastLapTime = BitConverter.ToSingle(_dataBuf, vOffset);
+                    else if (vName == "Brake") playerBrakeRaw = BitConverter.ToSingle(_dataBuf, vOffset);
+                    else if (vName == "Throttle") playerThrottleRaw = BitConverter.ToSingle(_dataBuf, vOffset);
+                    else if (vName == "Speed") playerSpeedMs = BitConverter.ToSingle(_dataBuf, vOffset);
+                    else if (vName == "Gear") playerGearVal = BitConverter.ToInt32(_dataBuf, vOffset);
+                    else if (vName == "LapDistPct") scalarLapDistPct = BitConverter.ToSingle(_dataBuf, vOffset);
+                    else if (vName == "CarIdxPosition")
+                    {
+                        for (int c = 0; c < Math.Min(64, vCount); c++) _pos[c] = BitConverter.ToInt32(_dataBuf, vOffset + c * 4);
+                    }
+                    else if (vName == "CarIdxLap")
+                    {
+                        for (int c = 0; c < Math.Min(64, vCount); c++) _lap[c] = BitConverter.ToInt32(_dataBuf, vOffset + c * 4);
+                    }
+                    else if (vName == "CarIdxLastLapTime")
+                    {
+                        for (int c = 0; c < Math.Min(64, vCount); c++) _lastLap[c] = BitConverter.ToSingle(_dataBuf, vOffset + c * 4);
+                    }
+                    else if (vName == "CarIdxBestLapTime")
+                    {
+                        for (int c = 0; c < Math.Min(64, vCount); c++) _bestLap[c] = BitConverter.ToSingle(_dataBuf, vOffset + c * 4);
+                    }
+                    else if (vName == "CarIdxLapDistPct")
+                    {
+                        for (int c = 0; c < Math.Min(64, vCount); c++) _lapDist[c] = BitConverter.ToSingle(_dataBuf, vOffset + c * 4);
+                    }
+                    else if (vName == "CarIdxF2Time")
+                    {
+                        for (int c = 0; c < Math.Min(64, vCount); c++) _f2Time[c] = BitConverter.ToSingle(_dataBuf, vOffset + c * 4);
+                    }
+                    else if (vName == "CarIdxOnPitRoad")
+                    {
+                        for (int c = 0; c < Math.Min(64, vCount); c++) _onPit[c] = _dataBuf[vOffset + c] != 0;
+                    }
+                }
+
+                // Only read and regex-parse the 100KB+ SessionInfo YAML when iRacing increments sessionInfoUpdate
+                if (_cachedYamlDrivers.Count == 0 ||
+                    sessionInfoUpdate != _cachedSessionInfoUpdate ||
+                    sessionInfoLen != _cachedSessionInfoLen ||
+                    sessionInfoOffset != _cachedSessionInfoOffset)
+                {
+                    byte[] yamlBytes = new byte[sessionInfoLen];
+                    _acc.ReadArray(sessionInfoOffset, yamlBytes, 0, sessionInfoLen);
+                    string yaml = ReadCString(yamlBytes, 0, sessionInfoLen);
+                    RefreshYamlCache(yaml, sessionNum);
+                    _cachedSessionInfoUpdate = sessionInfoUpdate;
+                    _cachedSessionInfoLen = sessionInfoLen;
+                    _cachedSessionInfoOffset = sessionInfoOffset;
+                }
+                else if (sessionNum != _cachedSessionNum && !string.IsNullOrEmpty(_cachedYaml))
+                {
+                    _cachedSessionNum = sessionNum;
+                    _cachedSessionType = ExtractSessionTypeFromYaml(_cachedYaml, sessionNum);
+                }
+
+                if (_cachedYamlDrivers.Count == 0) return null;
+
+                string trackName = _cachedTrackName;
+                string sessionType = _cachedSessionType;
+                bool isRaceSession = (sessionType == "RACE");
+
+                List<DriverRow> rows = new List<DriverRow>(_cachedYamlDrivers.Count);
+                float sessionBest = float.MaxValue;
+
+                for (int i = 0; i < _cachedYamlDrivers.Count; i++)
+                {
+                    CachedYamlDriver cd = _cachedYamlDrivers[i];
+                    int cIdx = cd.CarIdx;
+                    float bLap = _bestLap[cIdx];
+                    float lLap = _lastLap[cIdx];
+                    if (cIdx == playerCarIdx)
+                    {
+                        if (bLap <= 0f && lapBestLapTime > 0f) bLap = lapBestLapTime;
+                        if (lLap <= 0f && lapLastLapTime > 0f) lLap = lapLastLapTime;
+                    }
+                    if (bLap > 0f && bLap < sessionBest) sessionBest = bLap;
+
+                    DriverRow row = new DriverRow();
+                    row.CarIdx = cIdx;
+                    row.Position = _pos[cIdx];
+                    row.CarNumber = cd.CarNumber;
+                    row.UserName = cd.UserName;
+                    row.ClubName = cd.ClubName;
+                    row.CountryCode = cd.CountryCode;
+                    row.IRating = cd.IRating;
+                    row.LicClass = cd.LicClass;
+                    row.SafetyRating = cd.SafetyRating;
+                    row.LastLapSec = lLap > 0f ? lLap : 0f;
+                    row.BestLapSec = bLap > 0f ? bLap : 0f;
+                    row.GapToLeaderSec = Math.Max(0f, _f2Time[cIdx]);
+                    row.Lap = _lap[cIdx];
+                    row.LapDistPct = _lapDist[cIdx];
+                    row.OnPitRoad = _onPit[cIdx];
+                    row.IsPlayer = (cIdx == playerCarIdx);
+                    rows.Add(row);
+                }
+
+                rows.Sort(delegate(DriverRow a, DriverRow b)
+                {
+                    if (a.Position > 0 && b.Position > 0) return a.Position.CompareTo(b.Position);
+                    if (a.Position > 0) return -1;
+                    if (b.Position > 0) return 1;
+                    if (!isRaceSession)
+                    {
+                        if (a.BestLapSec > 0f && b.BestLapSec > 0f) return a.BestLapSec.CompareTo(b.BestLapSec);
+                        if (a.BestLapSec > 0f) return -1;
+                        if (b.BestLapSec > 0f) return 1;
+                    }
+                    float progA = a.Lap + a.LapDistPct;
+                    float progB = b.Lap + b.LapDistPct;
+                    if (Math.Abs(progA - progB) > 0.001f) return progB.CompareTo(progA);
+                    return b.IRating.CompareTo(a.IRating);
+                });
+
+                int irSum = 0;
+                for (int i = 0; i < rows.Count; i++) irSum += rows[i].IRating;
+                int sof = irSum / rows.Count;
+
+                int maxLap = 1;
+                float leaderBestLap = rows[0].BestLapSec;
+                for (int i = 0; i < rows.Count; i++)
+                {
+                    DriverRow d = rows[i];
+                    d.Position = i + 1;
+                    if (d.Lap > maxLap) maxLap = d.Lap;
+                    if (i == 0)
+                    {
+                        d.GapToLeaderSec = 0f;
+                        d.IntervalAheadSec = 0f;
+                    }
+                    else
+                    {
+                        if (!isRaceSession)
+                        {
+                            d.GapToLeaderSec = (d.BestLapSec > 0f && leaderBestLap > 0f)
+                                ? Math.Max(0f, d.BestLapSec - leaderBestLap)
+                                : 0f;
+                        }
+                        d.IntervalAheadSec = Math.Max(0f, d.GapToLeaderSec - rows[i - 1].GapToLeaderSec);
+                    }
+
+                    if (d.LastLapSec > 0f && Math.Abs(d.LastLapSec - sessionBest) < 0.003f)
+                        d.LastLapStatus = LapStatus.SessionBest;
+                    else if (d.LastLapSec > 0f && d.BestLapSec > 0f && Math.Abs(d.LastLapSec - d.BestLapSec) < 0.003f)
+                        d.LastLapStatus = LapStatus.PersonalBest;
+                    else
+                        d.LastLapStatus = LapStatus.Normal;
+
+                    d.IRatingDelta = CountryResolver.EstimateIRatingDelta(d.Position, rows.Count, d.IRating, sof);
+                }
+
+                // Official track sectors cached from iRacing SDK YAML (SplitTimeInfo -> Sectors)
+                float[] sectorPcts = _cachedSectorPcts;
+                int secCount = sectorPcts.Length;
+                if (secCount != _cachedSectorCount)
+                {
+                    _cachedSectorCount = secCount;
+                    _secStartBest = new float[secCount];
+                    _secStartOpt = new float[secCount];
+                    _secStartPers = new float[secCount];
+                    _secStartLast = new float[secCount];
+                    _secSplitBest = new float[secCount];
+                    _secSplitOpt = new float[secCount];
+                    _secSplitPers = new float[secCount];
+                    _secSplitLast = new float[secCount];
+                    _secDone = new bool[secCount];
+                    _lastSectorIdx = 0;
+                }
+
+                float playerPct = (playerCarIdx >= 0 && playerCarIdx < 64) ? _lapDist[playerCarIdx] : 0f;
+                int curSecIdx = 0;
+                for (int sIdx = secCount - 1; sIdx >= 0; sIdx--)
+                {
+                    if (playerPct >= sectorPcts[sIdx])
+                    {
+                        curSecIdx = sIdx;
+                        break;
+                    }
+                }
+
+                if (curSecIdx != _lastSectorIdx)
+                {
+                    if (curSecIdx > _lastSectorIdx)
+                    {
+                        // Completed _lastSectorIdx on track -> lock its split and record start boundary for curSecIdx
+                        _secSplitBest[_lastSectorIdx] = deltaSessionBest - _secStartBest[_lastSectorIdx];
+                        _secSplitOpt[_lastSectorIdx] = deltaSessionOpt - _secStartOpt[_lastSectorIdx];
+                        _secSplitPers[_lastSectorIdx] = deltaBest - _secStartPers[_lastSectorIdx];
+                        _secSplitLast[_lastSectorIdx] = deltaLast - _secStartLast[_lastSectorIdx];
+                        _secDone[_lastSectorIdx] = true;
+
+                        _secStartBest[curSecIdx] = deltaSessionBest;
+                        _secStartOpt[curSecIdx] = deltaSessionOpt;
+                        _secStartPers[curSecIdx] = deltaBest;
+                        _secStartLast[curSecIdx] = deltaLast;
+                    }
+                    else if (curSecIdx == 0)
+                    {
+                        // Crossed Start/Finish into Sector 1 -> lock final sector from just before S/F reset
+                        int finalIdx = secCount - 1;
+                        _secSplitBest[finalIdx] = _prevDeltaBest - _secStartBest[finalIdx];
+                        _secSplitOpt[finalIdx] = _prevDeltaOpt - _secStartOpt[finalIdx];
+                        _secSplitPers[finalIdx] = _prevDeltaPers - _secStartPers[finalIdx];
+                        _secSplitLast[finalIdx] = _prevDeltaLast - _secStartLast[finalIdx];
+                        _secDone[finalIdx] = true;
+
+                        for (int k = 0; k < secCount - 1; k++)
+                        {
+                            _secDone[k] = false;
+                            _secStartBest[k] = 0f;
+                            _secStartOpt[k] = 0f;
+                            _secStartPers[k] = 0f;
+                            _secStartLast[k] = 0f;
+                        }
+                    }
+                    _lastSectorIdx = curSecIdx;
+                }
+
+                // Continuously update active sector's live split at 60Hz
+                _secSplitBest[curSecIdx] = deltaSessionBest - _secStartBest[curSecIdx];
+                _secSplitOpt[curSecIdx] = deltaSessionOpt - _secStartOpt[curSecIdx];
+                _secSplitPers[curSecIdx] = deltaBest - _secStartPers[curSecIdx];
+                _secSplitLast[curSecIdx] = deltaLast - _secStartLast[curSecIdx];
+
+                _prevDeltaBest = deltaSessionBest;
+                _prevDeltaOpt = deltaSessionOpt;
+                _prevDeltaPers = deltaBest;
+                _prevDeltaLast = deltaLast;
+
+                DeltaTelemetryData dt = new DeltaTelemetryData();
+                dt.SessionBestLapSec = lapBestLapTime > 0f ? lapBestLapTime : (sessionBest < float.MaxValue ? sessionBest : 0f);
+                dt.DeltaSessionBestSec = deltaSessionBest;
+                dt.DeltaSessionBestRate = deltaSessionBestDD;
+
+                dt.SessionOptimalLapSec = dt.SessionBestLapSec > 0f ? Math.Max(0f, dt.SessionBestLapSec - (deltaSessionOpt - deltaSessionBest)) : 0f;
+                dt.DeltaSessionOptimalSec = deltaSessionOpt;
+                dt.DeltaSessionOptimalRate = deltaSessionOptDD;
+
+                dt.PersonalBestLapSec = dt.SessionBestLapSec;
+                dt.DeltaPersonalBestSec = deltaBest;
+                dt.DeltaPersonalBestRate = deltaBestDD;
+
+                dt.LastLapSec = lapLastLapTime;
+                dt.DeltaLastLapSec = deltaLast;
+                dt.DeltaLastLapRate = deltaLastDD;
+
+                dt.SectorStartPcts = sectorPcts;
+                dt.ActiveSectorIndex = curSecIdx;
+                dt.SectorDeltasSessionBest = (float[])_secSplitBest.Clone();
+                dt.SectorDeltasOptimal = (float[])_secSplitOpt.Clone();
+                dt.SectorDeltasPersonalBest = (float[])_secSplitPers.Clone();
+                dt.SectorDeltasLastLap = (float[])_secSplitLast.Clone();
+                dt.SectorDone = (bool[])_secDone.Clone();
+                dt.OffTrack = (playerTrackSurface == 0);
+
+                SessionSnapshot snap = new SessionSnapshot();
+                snap.Connected = true;
+                snap.IsLiveSource = true;
+                snap.TrackName = trackName;
+                snap.SessionType = sessionType;
+                snap.StrengthOfField = sof;
+                snap.CurrentLap = maxLap;
+                snap.TotalLaps = (sessionLapsRemain > 0 && sessionLapsRemain < 32767) ? sessionLapsRemain : 0;
+                snap.SessionTimeRemainSec = Math.Max(0.0, sessionTimeRemain);
+                snap.TrackTempC = trackTemp;
+                snap.Drivers = rows;
+                snap.Delta = dt;
+                snap.PlayerLapDistPct = scalarLapDistPct >= 0f ? scalarLapDistPct : playerPct;
+                snap.TrackLengthMeters = _cachedTrackLenMeters;
+                snap.PlayerBrakePct = Math.Max(0f, Math.Min(100f, playerBrakeRaw * 100.0f));
+                snap.PlayerThrottlePct = Math.Max(0f, Math.Min(100f, playerThrottleRaw * 100.0f));
+                snap.PlayerSpeedKph = Math.Max(0f, playerSpeedMs * 3.6f);
+                snap.PlayerGear = playerGearVal;
+                return snap;
             }
             catch
             {
+                CloseMapping();
                 return null;
             }
         }
@@ -2275,6 +2828,7 @@ namespace FreeOverlay
         private Rectangle _rectCornerModeBtn;
         private Rectangle _rectModeCycleBtn;
         private Rectangle _rectGapBtn;
+        private Rectangle _rectCarNumBtn;
         private Rectangle _rectLockBtn;
 
         public OverlayForm(OverlaySettings settings, SessionSnapshot initialSnapshot)
@@ -2451,6 +3005,12 @@ namespace FreeOverlay
                     _settings.NotifyChanged();
                     return;
                 }
+                if (_rectCarNumBtn.Contains(pt))
+                {
+                    _settings.ShowCarNumber = !_settings.ShowCarNumber;
+                    _settings.NotifyChanged();
+                    return;
+                }
             }
 
             DragCorner corner = HitTestCorner(pt);
@@ -2548,7 +3108,8 @@ namespace FreeOverlay
             else if (hoverCorner == DragCorner.TopRight || hoverCorner == DragCorner.BottomLeft)
                 Cursor = Cursors.SizeNESW;
             else if (_rectCornerModeBtn.Contains(e.Location) || _rectLockBtn.Contains(e.Location) ||
-                     _rectModeCycleBtn.Contains(e.Location) || _rectGapBtn.Contains(e.Location))
+                     _rectModeCycleBtn.Contains(e.Location) || _rectGapBtn.Contains(e.Location) ||
+                     _rectCarNumBtn.Contains(e.Location))
                 Cursor = Cursors.Hand;
             else
                 Cursor = Cursors.Default;
@@ -2827,6 +3388,16 @@ namespace FreeOverlay
 
                     if (curRight > srcRect.Right + (int)(70 * s))
                     {
+                        _rectCarNumBtn = DrawPillButton(g, fSmallBold, _settings.ShowCarNumber ? "# ON" : "# OFF", curRight, btnY, btnH, s,
+                            _settings.ShowCarNumber ? Color.FromArgb(40, 56, 189, 248) : Color.FromArgb(28, 255, 255, 255),
+                            _settings.ShowCarNumber ? Color.FromArgb(125, 211, 252) : Color.LightGray,
+                            _settings.ShowCarNumber ? Color.FromArgb(110, 56, 189, 248) : Color.FromArgb(60, 255, 255, 255));
+                        curRight = _rectCarNumBtn.Left - (int)Math.Round(5 * s);
+                    }
+                    else _rectCarNumBtn = Rectangle.Empty;
+
+                    if (curRight > srcRect.Right + (int)(70 * s))
+                    {
                         string modeTxt = _settings.Mode == TelemetryMode.Auto ? "AUTO" : (_settings.Mode == TelemetryMode.Mock ? "MOCK" : "LIVE");
                         _rectModeCycleBtn = DrawPillButton(g, fSmallBold, modeTxt, curRight, btnY, btnH, s,
                             Color.FromArgb(28, 255, 255, 255), Color.LightGray, Color.FromArgb(60, 255, 255, 255));
@@ -2838,6 +3409,7 @@ namespace FreeOverlay
                     _rectCornerModeBtn = Rectangle.Empty;
                     _rectLockBtn = Rectangle.Empty;
                     _rectGapBtn = Rectangle.Empty;
+                    _rectCarNumBtn = Rectangle.Empty;
                     _rectModeCycleBtn = Rectangle.Empty;
 
                     string hint = _settings.Locked ? "LOCKED (F6)" : "F5: HUB  •  F6: LOCK";
@@ -2866,12 +3438,17 @@ namespace FreeOverlay
                 }
 
                 int trackX = sessTypeX + (int)Math.Round(44 * s);
+                string lapPart = (_snapshot.TotalLaps > 0 && _snapshot.TotalLaps < 32767)
+                    ? string.Format(CultureInfo.InvariantCulture, "LAP {0}/{1}", _snapshot.CurrentLap, _snapshot.TotalLaps)
+                    : string.Format(CultureInfo.InvariantCulture, "LAP {0}", _snapshot.CurrentLap);
+                string remPart = (_snapshot.SessionTimeRemainSec > 0 && _snapshot.SessionTimeRemainSec < 86000)
+                    ? ("  •  REM " + FormatTimer(_snapshot.SessionTimeRemainSec))
+                    : string.Empty;
                 string metaStr = string.Format(
                     CultureInfo.InvariantCulture,
-                    "LAP {0}/{1}  •  REM {2}  •  SOF {3:N0}  •  {4:0}C",
-                    _snapshot.CurrentLap,
-                    _snapshot.TotalLaps,
-                    FormatTimer(_snapshot.SessionTimeRemainSec),
+                    "{0}{1}  •  SOF {2:N0}  •  {3:0}C",
+                    lapPart,
+                    remPart,
                     _snapshot.StrengthOfField,
                     _snapshot.TrackTempC
                 );
@@ -2909,9 +3486,11 @@ namespace FreeOverlay
                 int colPosW = (int)Math.Round(25 * s);
 
                 int colNumX = colPosX + colPosW + (int)Math.Round(6 * s);
-                int colNumW = (int)Math.Round(42 * s);
+                int colNumW = _settings.ShowCarNumber ? (int)Math.Round(42 * s) : 0;
 
-                int colFlagX = colNumX + colNumW + (int)Math.Round(4 * s);
+                int colFlagX = _settings.ShowCarNumber
+                    ? (colNumX + colNumW + (int)Math.Round(4 * s))
+                    : (colPosX + colPosW + (int)Math.Round(6 * s));
                 int colFlagW = (int)Math.Round(24 * s);
 
                 int colDriverX = colFlagX + colFlagW + (int)Math.Round(8 * s);
@@ -2925,7 +3504,10 @@ namespace FreeOverlay
                 using (SolidBrush mutedB = new SolidBrush(Color.FromArgb(156, 163, 175)))
                 {
                     g.DrawString("P", fSmallBold, mutedB, new RectangleF(colPosX, colHeadY, colPosW, colHeaderH), centerFmt);
-                    g.DrawString("#", fSmallBold, mutedB, new RectangleF(colNumX, colHeadY, colNumW, colHeaderH), leftFmt);
+                    if (_settings.ShowCarNumber)
+                    {
+                        g.DrawString("#", fSmallBold, mutedB, new RectangleF(colNumX, colHeadY, colNumW, colHeaderH), leftFmt);
+                    }
                     g.DrawString("FLG", fSmallBold, mutedB, new RectangleF(colFlagX, colHeadY, colFlagW, colHeaderH), centerFmt);
                     g.DrawString("DRIVER", fSmallBold, mutedB, new RectangleF(colDriverX, colHeadY, colDriverW, colHeaderH), leftFmt);
                     g.DrawString("SR", fSmallBold, mutedB, new RectangleF(colSrX, colHeadY, colSrW, colHeaderH), centerFmt);
@@ -2992,13 +3574,16 @@ namespace FreeOverlay
                     using (SolidBrush pb = new SolidBrush(posBg)) g.FillRectangle(pb, posRect);
                     using (SolidBrush pf = new SolidBrush(posFg)) g.DrawString(d.Position.ToString(), fSmallBold, pf, posRect, centerFmt);
 
-                    int barW = Math.Max(2, (int)Math.Round(3 * s));
-                    using (SolidBrush classBar = new SolidBrush(Color.FromArgb(255, 82, 82)))
+                    if (_settings.ShowCarNumber)
                     {
-                        g.FillRectangle(classBar, colNumX, badgeY + 1, barW, badgeH - 2);
+                        int barW = Math.Max(2, (int)Math.Round(3 * s));
+                        using (SolidBrush classBar = new SolidBrush(Color.FromArgb(255, 82, 82)))
+                        {
+                            g.FillRectangle(classBar, colNumX, badgeY + 1, barW, badgeH - 2);
+                        }
+                        g.DrawString("#" + d.CarNumber, fRowBold, Brushes.WhiteSmoke,
+                            new RectangleF(colNumX + barW + 3 * s, rowY, colNumW - barW, rowH), leftFmt);
                     }
-                    g.DrawString("#" + d.CarNumber, fRowBold, Brushes.WhiteSmoke,
-                        new RectangleF(colNumX + barW + 3 * s, rowY, colNumW - barW, rowH), leftFmt);
 
                     int flagW = Math.Max(16, (int)Math.Round(21 * s));
                     int flagH = Math.Max(10, (int)Math.Round(13 * s));
@@ -3187,6 +3772,7 @@ namespace FreeOverlay
 
         private Rectangle _rectCornerModeBtn;
         private Rectangle _rectStyleCycleBtn;
+        private Rectangle _rectAudioToggleBtn;
 
         public Garage61OverlayForm(OverlaySettings settings, Garage61LapManager g61, SessionSnapshot initialSnapshot)
         {
@@ -3374,6 +3960,17 @@ namespace FreeOverlay
                     ApplyDefaultSizeForCurrentStyle(true);
                     return;
                 }
+                if (_rectAudioToggleBtn.Contains(pt))
+                {
+                    _settings.Garage61AudioEnabled = !_settings.Garage61AudioEnabled;
+                    _settings.NotifyChanged();
+                    if (_settings.Garage61AudioEnabled)
+                    {
+                        BrakingAudioCoach.PlayTestSequence();
+                    }
+                    Invalidate();
+                    return;
+                }
             }
 
             DragCorner corner = HitTestCorner(pt);
@@ -3466,7 +4063,7 @@ namespace FreeOverlay
                 Cursor = Cursors.SizeNWSE;
             else if (hc == DragCorner.TopRight || hc == DragCorner.BottomLeft)
                 Cursor = Cursors.SizeNESW;
-            else if (_rectCornerModeBtn.Contains(e.Location) || _rectStyleCycleBtn.Contains(e.Location))
+            else if (_rectCornerModeBtn.Contains(e.Location) || _rectStyleCycleBtn.Contains(e.Location) || _rectAudioToggleBtn.Contains(e.Location))
                 Cursor = Cursors.Hand;
             else
                 Cursor = Cursors.Default;
@@ -3498,26 +4095,37 @@ namespace FreeOverlay
 
             if (distToStart > 3.0f && distToStart <= 260.0f)
             {
-                // Approaching Braking Zone -> Countdown bar & distance
+                // Approaching Braking Zone -> Countdown bar, 3-2-1-BRAKE lights & distance
                 using (SolidBrush bg = new SolidBrush(Color.FromArgb(20, 26, 38))) g.FillRectangle(bg, rect);
                 using (Pen bp = new Pen(Color.FromArgb(90, 56, 189, 248), 1f)) g.DrawRectangle(bp, rect);
 
                 string leftTxt = string.Format(CultureInfo.InvariantCulture, "NEXT BRAKE ({0}): IN {1:0}m", zName, distToStart);
                 using (SolidBrush sb = new SolidBrush(Color.FromArgb(125, 211, 252)))
                 {
-                    g.DrawString(leftTxt, fBold, sb, new RectangleF(rect.Left + 8 * s, rect.Top, rect.Width * 0.45f, rect.Height), leftFmt);
+                    g.DrawString(leftTxt, fBold, sb, new RectangleF(rect.Left + 8 * s, rect.Top, rect.Width * 0.42f, rect.Height), leftFmt);
                 }
 
-                // Closing-in countdown progress bar in the middle
-                int barW = (int)Math.Round(rect.Width * 0.24f);
-                int barH = Math.Max(6, (int)Math.Round(9 * s));
-                Rectangle progBg = new Rectangle(rect.Left + (rect.Width - barW) / 2, rect.Top + (rect.Height - barH) / 2, barW, barH);
-                using (SolidBrush pbg = new SolidBrush(Color.FromArgb(30, 41, 59))) g.FillRectangle(pbg, progBg);
-                float fillPct = Math.Max(0f, Math.Min(1f, (220f - distToStart) / 220f));
-                Color barCol = distToStart < 40f ? Color.FromArgb(244, 63, 94) : (distToStart < 95f ? Color.FromArgb(251, 191, 36) : Color.FromArgb(56, 189, 248));
-                using (SolidBrush pfg = new SolidBrush(barCol))
+                // 4-Stage F1-style Countdown Lights (Prep 1 -> Prep 2 -> Prep 3 -> BRAKE)
+                int stage = _g61.CurrentAudioStage;
+                int lightsAreaW = (int)Math.Round(rect.Width * 0.25f);
+                int lightsLeft = rect.Left + (rect.Width - lightsAreaW) / 2;
+                int lightGap = Math.Max(2, (int)Math.Round(4 * s));
+                int lightW = (lightsAreaW - lightGap * 3) / 4;
+                int lightH = Math.Max(10, (int)Math.Round(14 * s));
+                int lightY = rect.Top + (rect.Height - lightH) / 2;
+
+                for (int li = 0; li < 4; li++)
                 {
-                    g.FillRectangle(pfg, progBg.Left, progBg.Top, (int)Math.Round(progBg.Width * fillPct), progBg.Height);
+                    int lx = lightsLeft + li * (lightW + lightGap);
+                    Rectangle lr = new Rectangle(lx, lightY, lightW, lightH);
+                    bool lit = stage >= (li + 1);
+                    Color activeCol = li == 0
+                        ? Color.FromArgb(56, 189, 248)
+                        : (li == 1 ? Color.FromArgb(250, 204, 21) : (li == 2 ? Color.FromArgb(249, 115, 22) : Color.FromArgb(244, 63, 94)));
+                    Color fillC = lit ? activeCol : Color.FromArgb(28, 38, 54);
+                    Color bordC = lit ? Color.White : Color.FromArgb(70, 255, 255, 255);
+                    using (SolidBrush lb = new SolidBrush(fillC)) g.FillRectangle(lb, lr);
+                    using (Pen lp = new Pen(bordC, 1f)) g.DrawRectangle(lp, lr);
                 }
 
                 string rightTxt = string.Format(CultureInfo.InvariantCulture, "TARGET PEAK: {0:0}%", peakTarget);
@@ -3528,19 +4136,23 @@ namespace FreeOverlay
             }
             else if (distToStart <= 3.0f && z != null)
             {
-                // Actively inside Braking Zone -> Show Brake Spot Delta + Live Pressure Diff
-                using (SolidBrush bg = new SolidBrush(Color.FromArgb(48, 136, 19, 55))) g.FillRectangle(bg, rect);
-                using (Pen bp = new Pen(Color.FromArgb(160, 244, 63, 94), 1f)) g.DrawRectangle(bp, rect);
+                // Actively inside Braking Zone -> Flash BRAKE NOW! at entry or show Brake Spot Delta + Live Pressure Diff
+                bool justEntered = distToStart >= -18.0f && youBrk < 12.0f;
+                Color bannerBg = justEntered ? Color.FromArgb(185, 225, 29, 72) : Color.FromArgb(48, 136, 19, 55);
+                using (SolidBrush bg = new SolidBrush(bannerBg)) g.FillRectangle(bg, rect);
+                using (Pen bp = new Pen(Color.FromArgb(220, 244, 63, 94), 1.2f)) g.DrawRectangle(bp, rect);
 
                 float spotDelta = _g61.HasCurrentBrakeSpotDelta ? _g61.CurrentBrakeSpotDeltaMeters : 2.4f;
-                string spotTxt = string.Format(
-                    CultureInfo.InvariantCulture,
-                    "BRAKE PT ({0}): {1:0.0}m {2}",
-                    zName,
-                    Math.Abs(spotDelta),
-                    spotDelta >= 0f ? "LATE" : "EARLY"
-                );
-                using (SolidBrush ab = new SolidBrush(Color.FromArgb(253, 224, 71)))
+                string spotTxt = justEntered
+                    ? string.Format(CultureInfo.InvariantCulture, ">>> BRAKE NOW! ({0}) <<<", zName)
+                    : string.Format(
+                        CultureInfo.InvariantCulture,
+                        "BRAKE PT ({0}): {1:0.0}m {2}",
+                        zName,
+                        Math.Abs(spotDelta),
+                        spotDelta >= 0f ? "LATE" : "EARLY"
+                    );
+                using (SolidBrush ab = new SolidBrush(justEntered ? Color.White : Color.FromArgb(253, 224, 71)))
                 {
                     g.DrawString(spotTxt, fBold, ab, new RectangleF(rect.Left + 8 * s, rect.Top, rect.Width * 0.48f, rect.Height), leftFmt);
                 }
@@ -3617,11 +4229,11 @@ namespace FreeOverlay
                 g.DrawLine(peakPen, graphRect.Left + 2, peakY, graphRect.Right - 2, peakY);
             }
 
-            int numSamples = 90;
+            int numSamples = 140;
             List<PointF> g61BrakePts = new List<PointF>(numSamples + 1);
             List<PointF> g61ThrotPts = new List<PointF>(numSamples + 1);
-            List<PointF> youBrakePts = new List<PointF>(numSamples + 1);
-            List<PointF> youThrotPts = new List<PointF>(numSamples + 1);
+            List<PointF> youBrakePts = new List<PointF>(numSamples + 2);
+            List<PointF> youThrotPts = new List<PointF>(numSamples + 2);
 
             for (int i = 0; i <= numSamples; i++)
             {
@@ -3637,16 +4249,22 @@ namespace FreeOverlay
                 g61BrakePts.Add(new PointF(x, yb));
                 g61ThrotPts.Add(new PointF(x, yt));
 
-                if (dp <= 0.0005f)
+                if (dp < -0.0002f)
                 {
-                    float pb = (i == numSamples || Math.Abs(dp) < 0.0012f) ? _snapshot.PlayerBrakePct : _g61.GetPlayerBrakeAtPct(samplePct);
-                    float pt = (i == numSamples || Math.Abs(dp) < 0.0012f) ? _snapshot.PlayerThrottlePct : _g61.GetPlayerThrottleAtPct(samplePct);
+                    float pb = _g61.GetPlayerBrakeAtPct(samplePct);
+                    float pt = _g61.GetPlayerThrottleAtPct(samplePct);
                     float pyb = graphRect.Bottom - botPad - (pb / 100.0f) * plotH;
                     float pyt = graphRect.Bottom - botPad - (pt / 100.0f) * plotH;
                     youBrakePts.Add(new PointF(x, pyb));
                     youThrotPts.Add(new PointF(x, pyt));
                 }
             }
+
+            // Anchor the live tip of the player trace squarely on NOW (dp = 0, x = nowX)
+            float nowYb = graphRect.Bottom - botPad - (_snapshot.PlayerBrakePct / 100.0f) * plotH;
+            float nowYt = graphRect.Bottom - botPad - (_snapshot.PlayerThrottlePct / 100.0f) * plotH;
+            youBrakePts.Add(new PointF(nowX, nowYb));
+            youThrotPts.Add(new PointF(nowX, nowYt));
 
             // Draw Throttle traces (G61 dashed green, Player solid green)
             using (Pen g61ThrPen = new Pen(Color.FromArgb(115, 52, 211, 153), Math.Max(1.2f, 1.4f * s)))
@@ -3670,27 +4288,55 @@ namespace FreeOverlay
                 if (youBrakePts.Count > 1) g.DrawLines(youBrkPen, youBrakePts.ToArray());
             }
 
-            // Highlight any G61 Braking Point marker inside the visible window
+            // Highlight any G61 Braking Point marker (and 3-2-1 prep ticks) inside the visible window
             float wrappedNow = nowPct - (float)Math.Floor(nowPct);
+            float speedMps = Math.Max(18.0f, _snapshot.PlayerSpeedKph / 3.6f);
             for (int z = 0; z < _g61.Zones.Count; z++)
             {
                 float dp = _g61.Zones[z].StartPct - wrappedNow;
                 if (dp < -0.5f) dp += 1.0f;
                 if (dp > 0.5f) dp -= 1.0f;
+
+                // Draw 3 preparatory audio cue ticks ahead of the exact brake spot (1.05s, 0.70s, 0.35s)
+                if (_settings.Garage61AudioEnabled && dp > 0f)
+                {
+                    float[] prepSecs = new float[] { 1.05f, 0.70f, 0.35f };
+                    for (int p = 0; p < prepSecs.Length; p++)
+                    {
+                        float prepPctOffset = (prepSecs[p] * speedMps) / Math.Max(1000f, trackLen);
+                        float tickDp = dp - prepPctOffset;
+                        if (tickDp >= -winPastPct && tickDp <= winAheadPct)
+                        {
+                            int tx = graphRect.Left + (int)Math.Round(((tickDp + winPastPct) / totalWinPct) * graphRect.Width);
+                            Color tickCol = p == 0
+                                ? Color.FromArgb(110, 56, 189, 248)
+                                : (p == 1 ? Color.FromArgb(130, 250, 204, 21) : Color.FromArgb(150, 249, 115, 22));
+                            using (Pen tp = new Pen(tickCol, Math.Max(1f, 1.1f * s)))
+                            {
+                                tp.DashStyle = DashStyle.Dot;
+                                g.DrawLine(tp, tx, graphRect.Top + 14 * s, tx, graphRect.Bottom - 2);
+                            }
+                        }
+                    }
+                }
+
                 if (dp >= -winPastPct && dp <= winAheadPct)
                 {
                     int bx = graphRect.Left + (int)Math.Round(((dp + winPastPct) / totalWinPct) * graphRect.Width);
-                    using (Pen mPen = new Pen(Color.FromArgb(200, 56, 189, 248), Math.Max(1f, 1.4f * s)))
+                    bool atBrakeSpot = Math.Abs(dp * trackLen) <= 14.0f;
+                    Color lineCol = atBrakeSpot ? Color.FromArgb(255, 244, 63, 94) : Color.FromArgb(220, 56, 189, 248);
+                    using (Pen mPen = new Pen(lineCol, Math.Max(1.4f, (atBrakeSpot ? 2.2f : 1.5f) * s)))
                     {
-                        mPen.DashStyle = DashStyle.Dot;
+                        if (!atBrakeSpot) mPen.DashStyle = DashStyle.Dot;
                         g.DrawLine(mPen, bx, graphRect.Top + 2, bx, graphRect.Bottom - 2);
                     }
-                    int tagW = (int)Math.Round(56 * s);
+                    int tagW = (int)Math.Round((atBrakeSpot ? 62 : 56) * s);
                     int tagH = (int)Math.Round(13 * s);
                     Rectangle tagR = new Rectangle(Math.Max(graphRect.Left + 2, Math.Min(graphRect.Right - tagW - 2, bx - tagW / 2)), graphRect.Top + 2, tagW, tagH);
-                    using (SolidBrush tb = new SolidBrush(Color.FromArgb(220, 2, 132, 199))) g.FillRectangle(tb, tagR);
+                    Color tagBg = atBrakeSpot ? Color.FromArgb(240, 225, 29, 72) : Color.FromArgb(220, 2, 132, 199);
+                    using (SolidBrush tb = new SolidBrush(tagBg)) g.FillRectangle(tb, tagR);
                     StringFormat cf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                    g.DrawString("G61 BRK", fSmall, Brushes.White, tagR, cf);
+                    g.DrawString(atBrakeSpot ? "BRAKE!" : "G61 BRK", fSmall, Brushes.White, tagR, cf);
                 }
             }
 
@@ -3759,8 +4405,20 @@ namespace FreeOverlay
                 using (Pen sp = new Pen(Color.FromArgb(140, 56, 189, 248), 1f)) g.DrawRectangle(sp, _rectStyleCycleBtn);
                 using (SolidBrush sf = new SolidBrush(Color.FromArgb(125, 211, 252))) g.DrawString(styleName, fSmall, sf, _rectStyleCycleBtn, centerFmt);
 
+                int audioPillW = (int)Math.Round(78 * s);
+                _rectAudioToggleBtn = new Rectangle(_rectStyleCycleBtn.Right + (int)Math.Round(6 * s), topY, audioPillW, topBarH);
+                Color audBg = _settings.Garage61AudioEnabled ? Color.FromArgb(45, 34, 197, 94) : Color.FromArgb(30, 107, 114, 128);
+                Color audBorder = _settings.Garage61AudioEnabled ? Color.FromArgb(150, 74, 222, 128) : Color.FromArgb(80, 156, 163, 175);
+                Color audFg = _settings.Garage61AudioEnabled ? Color.FromArgb(134, 239, 172) : Color.FromArgb(156, 163, 175);
+                using (SolidBrush ab = new SolidBrush(audBg)) g.FillRectangle(ab, _rectAudioToggleBtn);
+                using (Pen ap = new Pen(audBorder, 1f)) g.DrawRectangle(ap, _rectAudioToggleBtn);
+                using (SolidBrush af = new SolidBrush(audFg))
+                {
+                    g.DrawString(_settings.Garage61AudioEnabled ? "AUDIO: ON" : "AUDIO: OFF", fSmall, af, _rectAudioToggleBtn, centerFmt);
+                }
+
                 g.DrawString(_g61.SourceLabel, fHeader, Brushes.Gainsboro,
-                    new RectangleF(_rectStyleCycleBtn.Right + 8 * s, topY, Width * 0.48f, topBarH), leftFmt);
+                    new RectangleF(_rectAudioToggleBtn.Right + 8 * s, topY, Width * 0.40f, topBarH), leftFmt);
 
                 int rightReserved = (_isHovered && !_settings.Locked) ? (int)Math.Round(30 * s) : 0;
                 using (SolidBrush legB = new SolidBrush(Color.FromArgb(251, 113, 133)))
@@ -4033,6 +4691,12 @@ namespace FreeOverlay
         [DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr hWnd, int Msg, int wParam, int lParam);
 
+        [DllImport("winmm.dll")]
+        private static extern uint timeBeginPeriod(uint uPeriod);
+
+        [DllImport("winmm.dll")]
+        private static extern uint timeEndPeriod(uint uPeriod);
+
         private readonly OverlaySettings _settings;
         private readonly MockSimulator _mockSim;
         private readonly LiveIracingReader _liveReader;
@@ -4041,6 +4705,7 @@ namespace FreeOverlay
         private readonly DeltaBarForm _deltaBarForm;
         private readonly Garage61OverlayForm _garage61Form;
         private readonly Timer _timer;
+        private readonly Stopwatch _frameStopwatch;
         private readonly NotifyIcon _trayIcon;
 
         private SessionSnapshot _lastSnapshot;
@@ -4055,6 +4720,7 @@ namespace FreeOverlay
 
         // Standings Card controls
         private Rectangle _btnStandingsToggle;
+        private Rectangle _btnStandingsCarNum;
         private Rectangle _btnStandingsGap;
         private Rectangle _btnStandingsCompactIr;
         private Rectangle _btnStandingsDeltaIr;
@@ -4085,6 +4751,8 @@ namespace FreeOverlay
         private Rectangle _btnG61StyleA;
         private Rectangle _btnG61StyleB;
         private Rectangle _btnG61StyleC;
+        private Rectangle _btnG61AudioToggle;
+        private Rectangle _btnG61AudioTest;
         private Rectangle _btnG61Look80;
         private Rectangle _btnG61Look120;
         private Rectangle _btnG61Look180;
@@ -4147,6 +4815,12 @@ namespace FreeOverlay
                 _settings.Garage61Enabled = !_settings.Garage61Enabled;
                 _settings.NotifyChanged();
             });
+            trayMenu.MenuItems.Add("Toggle Braking Audio Cues", delegate(object s, EventArgs e)
+            {
+                _settings.Garage61AudioEnabled = !_settings.Garage61AudioEnabled;
+                _settings.NotifyChanged();
+                if (_settings.Garage61AudioEnabled) BrakingAudioCoach.PlayTestSequence();
+            });
             trayMenu.MenuItems.Add("Lock / Unlock Overlays (F6)", delegate(object s, EventArgs e)
             {
                 _settings.Locked = !_settings.Locked;
@@ -4167,8 +4841,11 @@ namespace FreeOverlay
                 Activate();
             };
 
+            timeBeginPeriod(1);
+            _frameStopwatch = Stopwatch.StartNew();
+
             _timer = new Timer();
-            _timer.Interval = 50; // 20 FPS smooth Delta Bar & Garage61 Coach update
+            _timer.Interval = 16; // ~60 FPS high-rate update matching iRacing 60 Hz telemetry
             _timer.Tick += OnTimerTick;
             _timer.Start();
         }
@@ -4190,6 +4867,7 @@ namespace FreeOverlay
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            timeEndPeriod(1);
             UnregisterHotKey(Handle, HOTKEY_HUB);
             UnregisterHotKey(Handle, HOTKEY_LOCK);
             UnregisterHotKey(Handle, HOTKEY_MODE);
@@ -4206,6 +4884,7 @@ namespace FreeOverlay
         {
             _settings.Save();
             _timer.Stop();
+            timeEndPeriod(1);
             if (_trayIcon != null) _trayIcon.Visible = false;
             Application.Exit();
         }
@@ -4267,6 +4946,10 @@ namespace FreeOverlay
         private void OnTimerTick(object sender, EventArgs e)
         {
             _tickCounter++;
+            double dtSec = _frameStopwatch.Elapsed.TotalSeconds;
+            _frameStopwatch.Restart();
+            if (dtSec <= 0.001 || dtSec > 0.25) dtSec = 0.01667;
+
             SessionSnapshot snap = null;
 
             if (_settings.Mode == TelemetryMode.Live || _settings.Mode == TelemetryMode.Auto)
@@ -4286,12 +4969,13 @@ namespace FreeOverlay
                 }
                 else
                 {
-                    snap = _mockSim.Tick(0.05);
+                    snap = _mockSim.Tick(dtSec);
                 }
             }
 
             _lastSnapshot = snap;
-            _g61Manager.UpdatePlayerTelemetry(snap.PlayerLapDistPct, snap.PlayerBrakePct, snap.PlayerThrottlePct, snap.TrackLengthMeters);
+            bool allowAudio = _settings.Garage61Enabled && _settings.Garage61AudioEnabled && snap.Connected;
+            _g61Manager.UpdatePlayerTelemetry(snap.PlayerLapDistPct, snap.PlayerBrakePct, snap.PlayerThrottlePct, snap.TrackLengthMeters, snap.PlayerSpeedKph, allowAudio);
 
             if (_settings.DeltaBarEnabled && _deltaBarForm.Visible)
             {
@@ -4303,13 +4987,13 @@ namespace FreeOverlay
                 _garage61Form.UpdateSnapshot(snap);
             }
 
-            // Update Standings at ~5 Hz (every 4 ticks = 200ms)
-            if (_settings.StandingsEnabled && _standingsForm.Visible && (_tickCounter % 4 == 0))
+            // Update Standings at ~5 Hz (every 12 ticks at 60 FPS = ~200ms)
+            if (_settings.StandingsEnabled && _standingsForm.Visible && (_tickCounter % 12 == 0))
             {
                 _standingsForm.UpdateSnapshot(snap);
             }
 
-            if (Visible && (_tickCounter % 10 == 0))
+            if (Visible && (_tickCounter % 15 == 0))
             {
                 Invalidate();
             }
@@ -4415,6 +5099,12 @@ namespace FreeOverlay
             if (_btnStandingsToggle.Contains(pt))
             {
                 _settings.StandingsEnabled = !_settings.StandingsEnabled;
+                _settings.NotifyChanged();
+                return;
+            }
+            if (_btnStandingsCarNum.Contains(pt))
+            {
+                _settings.ShowCarNumber = !_settings.ShowCarNumber;
                 _settings.NotifyChanged();
                 return;
             }
@@ -4576,6 +5266,21 @@ namespace FreeOverlay
             {
                 _settings.Garage61Style = Garage61LayoutStyle.OptionC_ProBoxWithCornerAudit;
                 _garage61Form.ApplyDefaultSizeForCurrentStyle(true);
+                return;
+            }
+            if (_btnG61AudioToggle.Contains(pt))
+            {
+                _settings.Garage61AudioEnabled = !_settings.Garage61AudioEnabled;
+                _settings.NotifyChanged();
+                if (_settings.Garage61AudioEnabled)
+                {
+                    BrakingAudioCoach.PlayTestSequence();
+                }
+                return;
+            }
+            if (_btnG61AudioTest.Contains(pt))
+            {
+                BrakingAudioCoach.PlayTestSequence();
                 return;
             }
             if (_btnG61Look80.Contains(pt))
@@ -4775,6 +5480,15 @@ namespace FreeOverlay
                 curY += rowH + (int)Math.Round(12 * s);
 
                 int r1Start = c1X + c1W - optW;
+                g.DrawString("Car Number (#)", fLabel, Brushes.Gainsboro, new RectangleF(c1X, curY, c1W * 0.50f, rowH), leftFmt);
+                _btnStandingsCarNum = DrawButton(
+                    g, fBtn,
+                    _settings.ShowCarNumber ? "SHOW (#)" : "HIDDEN",
+                    r1Start, curY, optW, rowH,
+                    _settings.ShowCarNumber, Color.FromArgb(34, 197, 94), s
+                );
+                curY += rowH + gapY;
+
                 g.DrawString("Timing Column", fLabel, Brushes.Gainsboro, new RectangleF(c1X, curY, c1W * 0.50f, rowH), leftFmt);
                 _btnStandingsGap = DrawButton(
                     g, fBtn,
@@ -4920,6 +5634,18 @@ namespace FreeOverlay
                 curY += smallBtnH + gapY;
 
                 int r3Start = c3X + c3W - optW;
+                g.DrawString("Braking Audio Cues", fLabel, Brushes.Gainsboro, new RectangleF(c3X, curY, c3W * 0.48f, rowH), leftFmt);
+                int audW = (int)Math.Round(optW * 0.65f);
+                int tstW = optW - audW - 4;
+                _btnG61AudioToggle = DrawButton(
+                    g, fBtn,
+                    _settings.Garage61AudioEnabled ? "BEEPS ON" : "MUTED",
+                    r3Start, curY, audW, rowH,
+                    _settings.Garage61AudioEnabled, Color.FromArgb(34, 197, 94), s
+                );
+                _btnG61AudioTest = DrawButton(g, fBtn, "TEST", r3Start + audW + 4, curY, tstW, rowH, false, Color.FromArgb(56, 189, 248), s);
+                curY += rowH + gapY;
+
                 g.DrawString("Lookahead Window", fLabel, Brushes.Gainsboro, new RectangleF(c3X, curY, c3W * 0.48f, rowH), leftFmt);
                 _btnG61Look80 = DrawButton(g, fBtn, "+80m", r3Start, curY, rngW, rowH,
                     _settings.Garage61LookaheadMeters == 80, Color.FromArgb(56, 189, 248), s);
