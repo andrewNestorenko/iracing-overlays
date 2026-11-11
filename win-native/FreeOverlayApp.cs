@@ -63,6 +63,9 @@ namespace FreeOverlay
         public bool StandingsEnabled = true;
         public bool DeltaBarEnabled = true;
         public bool Garage61Enabled = true;
+        public bool StandingsAutoOpen = true;
+        public bool DeltaBarAutoOpen = true;
+        public bool Garage61AutoOpen = true;
         public bool Locked = false;
         public TelemetryMode Mode = TelemetryMode.Auto;
 
@@ -128,6 +131,9 @@ namespace FreeOverlay
                 sb.AppendLine("StandingsEnabled=" + StandingsEnabled);
                 sb.AppendLine("DeltaBarEnabled=" + DeltaBarEnabled);
                 sb.AppendLine("Garage61Enabled=" + Garage61Enabled);
+                sb.AppendLine("StandingsAutoOpen=" + StandingsAutoOpen);
+                sb.AppendLine("DeltaBarAutoOpen=" + DeltaBarAutoOpen);
+                sb.AppendLine("Garage61AutoOpen=" + Garage61AutoOpen);
                 sb.AppendLine("Mode=" + (int)Mode);
                 sb.AppendLine("ShowCarNumber=" + ShowCarNumber);
                 sb.AppendLine("ShowInterval=" + ShowInterval);
@@ -171,6 +177,9 @@ namespace FreeOverlay
             {
                 string path = GetConfigPath();
                 if (!File.Exists(path)) return;
+                bool hasStandingsAuto = false;
+                bool hasDeltaAuto = false;
+                bool hasG61Auto = false;
                 string[] lines = File.ReadAllLines(path, Encoding.UTF8);
                 for (int i = 0; i < lines.Length; i++)
                 {
@@ -185,6 +194,9 @@ namespace FreeOverlay
                     if (k == "StandingsEnabled" && bool.TryParse(v, out bv)) StandingsEnabled = bv;
                     else if (k == "DeltaBarEnabled" && bool.TryParse(v, out bv)) DeltaBarEnabled = bv;
                     else if (k == "Garage61Enabled" && bool.TryParse(v, out bv)) Garage61Enabled = bv;
+                    else if (k == "StandingsAutoOpen" && bool.TryParse(v, out bv)) { StandingsAutoOpen = bv; hasStandingsAuto = true; }
+                    else if (k == "DeltaBarAutoOpen" && bool.TryParse(v, out bv)) { DeltaBarAutoOpen = bv; hasDeltaAuto = true; }
+                    else if (k == "Garage61AutoOpen" && bool.TryParse(v, out bv)) { Garage61AutoOpen = bv; hasG61Auto = true; }
                     else if (k == "Mode" && int.TryParse(v, out iv)) Mode = (TelemetryMode)(iv % 3);
                     else if (k == "ShowCarNumber" && bool.TryParse(v, out bv)) ShowCarNumber = bv;
                     else if (k == "ShowInterval" && bool.TryParse(v, out bv)) ShowInterval = bv;
@@ -216,6 +228,12 @@ namespace FreeOverlay
                     else if (k == "Garage61H" && int.TryParse(v, out iv)) Garage61H = iv;
                     else if (k == "Garage61CsvPath") Garage61CsvPath = v;
                 }
+                if (!hasStandingsAuto) StandingsAutoOpen = StandingsEnabled;
+                if (!hasDeltaAuto) DeltaBarAutoOpen = DeltaBarEnabled;
+                if (!hasG61Auto) Garage61AutoOpen = Garage61Enabled;
+                StandingsEnabled = StandingsAutoOpen;
+                DeltaBarEnabled = DeltaBarAutoOpen;
+                Garage61Enabled = Garage61AutoOpen;
             }
             catch
             {
@@ -1585,6 +1603,15 @@ namespace FreeOverlay
 
         private MemoryMappedFile _mmf;
         private MemoryMappedViewAccessor _acc;
+        private long _nextOpenAttemptTicks = 0;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr OpenFileMapping(uint dwDesiredAccess, bool bInheritHandle, string lpName);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr hObject);
+
+        private const uint FILE_MAP_READ = 0x0004;
 
         private int _cachedSessionInfoUpdate = -1;
         private int _cachedSessionInfoLen = -1;
@@ -1596,6 +1623,42 @@ namespace FreeOverlay
         private float _cachedTrackLenMeters = 5000f;
         private float[] _cachedSectorPcts = new float[] { 0.0f, 0.333333f, 0.666667f };
         private readonly List<CachedYamlDriver> _cachedYamlDrivers = new List<CachedYamlDriver>();
+        private List<DriverRow> _cachedSortedDrivers = new List<DriverRow>();
+        private int _cachedSof = 1500;
+        private int _cachedMaxLap = 1;
+        private float _cachedSessionBestLap = float.MaxValue;
+
+        // Cached VarHeader offsets (refreshed only when numVars or varHeaderOffset changes)
+        private int _cachedNumVars = -1;
+        private int _cachedVarHeaderOffset = -1;
+        private int _offPlayerCarIdx = -1;
+        private int _offPlayerTrackSurface = -1;
+        private int _offSessionNum = -1;
+        private int _offSessionTimeRemain = -1;
+        private int _offSessionLapsRemainEx = -1;
+        private int _offTrackTempCrew = -1;
+        private int _offDeltaSessionBest = -1;
+        private int _offDeltaSessionBestDD = -1;
+        private int _offLapBestLapTime = -1;
+        private int _offDeltaSessionOpt = -1;
+        private int _offDeltaSessionOptDD = -1;
+        private int _offDeltaBest = -1;
+        private int _offDeltaBestDD = -1;
+        private int _offDeltaLast = -1;
+        private int _offDeltaLastDD = -1;
+        private int _offLapLastLapTime = -1;
+        private int _offBrake = -1;
+        private int _offThrottle = -1;
+        private int _offSpeed = -1;
+        private int _offGear = -1;
+        private int _offLapDistPct = -1;
+        private int _offCarIdxPos = -1, _cntCarIdxPos = 0;
+        private int _offCarIdxLap = -1, _cntCarIdxLap = 0;
+        private int _offCarIdxLastLap = -1, _cntCarIdxLastLap = 0;
+        private int _offCarIdxBestLap = -1, _cntCarIdxBestLap = 0;
+        private int _offCarIdxLapDist = -1, _cntCarIdxLapDist = 0;
+        private int _offCarIdxF2Time = -1, _cntCarIdxF2Time = 0;
+        private int _offCarIdxOnPit = -1, _cntCarIdxOnPit = 0;
 
         private byte[] _varHeadersBuf;
         private byte[] _dataBuf;
@@ -1638,6 +1701,8 @@ namespace FreeOverlay
                 _mmf = null;
             }
             _cachedSessionInfoUpdate = -1;
+            _cachedNumVars = -1;
+            _cachedVarHeaderOffset = -1;
         }
 
         private static string ReadCString(byte[] buf, int offset, int maxLen)
@@ -1699,23 +1764,12 @@ namespace FreeOverlay
             return "RACE";
         }
 
-        /// <summary>
-        /// Parses the official track sectors from iRacing's SessionInfo YAML:
-        /// SplitTimeInfo:
-        ///  Sectors:
-        ///  - SectorNum: 0
-        ///    SectorStartPct: 0.000000
-        ///  - SectorNum: 1
-        ///    SectorStartPct: 0.318452
-        ///  ...
-        /// </summary>
         private static float[] ExtractTrackSectorsFromYaml(string yaml)
         {
             int splitIdx = yaml.IndexOf("SplitTimeInfo:");
             if (splitIdx >= 0)
             {
                 string tail = yaml.Substring(splitIdx);
-                // Stop at the next top-level YAML section (unindented key at start of line)
                 Match nextTop = Regex.Match(tail.Substring(14), @"\r?\n[A-Za-z0-9_]+:");
                 string splitSection = nextTop.Success ? tail.Substring(0, 14 + nextTop.Index) : tail;
 
@@ -1833,12 +1887,85 @@ namespace FreeOverlay
             }
         }
 
+        private void RefreshVarOffsets(int numVars, int varHeaderOffset)
+        {
+            int headersLen = numVars * 144;
+            if (_varHeadersBuf == null || _varHeadersBuf.Length != headersLen)
+                _varHeadersBuf = new byte[headersLen];
+            _acc.ReadArray(varHeaderOffset, _varHeadersBuf, 0, headersLen);
+
+            _offPlayerCarIdx = _offPlayerTrackSurface = _offSessionNum = -1;
+            _offSessionTimeRemain = _offSessionLapsRemainEx = _offTrackTempCrew = -1;
+            _offDeltaSessionBest = _offDeltaSessionBestDD = _offLapBestLapTime = -1;
+            _offDeltaSessionOpt = _offDeltaSessionOptDD = -1;
+            _offDeltaBest = _offDeltaBestDD = -1;
+            _offDeltaLast = _offDeltaLastDD = _offLapLastLapTime = -1;
+            _offBrake = _offThrottle = _offSpeed = _offGear = _offLapDistPct = -1;
+            _offCarIdxPos = _offCarIdxLap = _offCarIdxLastLap = _offCarIdxBestLap = -1;
+            _offCarIdxLapDist = _offCarIdxF2Time = _offCarIdxOnPit = -1;
+
+            for (int v = 0; v < numVars; v++)
+            {
+                int hOff = v * 144;
+                int vOffset = BitConverter.ToInt32(_varHeadersBuf, hOff + 4);
+                int vCount = BitConverter.ToInt32(_varHeadersBuf, hOff + 8);
+                string vName = ReadCString(_varHeadersBuf, hOff + 16, 32);
+
+                if (vName == "PlayerCarIdx") _offPlayerCarIdx = vOffset;
+                else if (vName == "PlayerTrackSurface") _offPlayerTrackSurface = vOffset;
+                else if (vName == "SessionNum") _offSessionNum = vOffset;
+                else if (vName == "SessionTimeRemain") _offSessionTimeRemain = vOffset;
+                else if (vName == "SessionLapsRemainEx") _offSessionLapsRemainEx = vOffset;
+                else if (vName == "TrackTempCrew") _offTrackTempCrew = vOffset;
+                else if (vName == "LapDeltaToSessionBestLap") _offDeltaSessionBest = vOffset;
+                else if (vName == "LapDeltaToSessionBestLap_DD") _offDeltaSessionBestDD = vOffset;
+                else if (vName == "LapBestLapTime") _offLapBestLapTime = vOffset;
+                else if (vName == "LapDeltaToSessionOptimalLap") _offDeltaSessionOpt = vOffset;
+                else if (vName == "LapDeltaToSessionOptimalLap_DD") _offDeltaSessionOptDD = vOffset;
+                else if (vName == "LapDeltaToBestLap") _offDeltaBest = vOffset;
+                else if (vName == "LapDeltaToBestLap_DD") _offDeltaBestDD = vOffset;
+                else if (vName == "LapDeltaToSessionLastLap") _offDeltaLast = vOffset;
+                else if (vName == "LapDeltaToSessionLastLap_DD") _offDeltaLastDD = vOffset;
+                else if (vName == "LapLastLapTime") _offLapLastLapTime = vOffset;
+                else if (vName == "Brake") _offBrake = vOffset;
+                else if (vName == "Throttle") _offThrottle = vOffset;
+                else if (vName == "Speed") _offSpeed = vOffset;
+                else if (vName == "Gear") _offGear = vOffset;
+                else if (vName == "LapDistPct") _offLapDistPct = vOffset;
+                else if (vName == "CarIdxPosition") { _offCarIdxPos = vOffset; _cntCarIdxPos = Math.Min(64, vCount); }
+                else if (vName == "CarIdxLap") { _offCarIdxLap = vOffset; _cntCarIdxLap = Math.Min(64, vCount); }
+                else if (vName == "CarIdxLastLapTime") { _offCarIdxLastLap = vOffset; _cntCarIdxLastLap = Math.Min(64, vCount); }
+                else if (vName == "CarIdxBestLapTime") { _offCarIdxBestLap = vOffset; _cntCarIdxBestLap = Math.Min(64, vCount); }
+                else if (vName == "CarIdxLapDistPct") { _offCarIdxLapDist = vOffset; _cntCarIdxLapDist = Math.Min(64, vCount); }
+                else if (vName == "CarIdxF2Time") { _offCarIdxF2Time = vOffset; _cntCarIdxF2Time = Math.Min(64, vCount); }
+                else if (vName == "CarIdxOnPitRoad") { _offCarIdxOnPit = vOffset; _cntCarIdxOnPit = Math.Min(64, vCount); }
+            }
+
+            _cachedNumVars = numVars;
+            _cachedVarHeaderOffset = varHeaderOffset;
+        }
+
         public SessionSnapshot TryReadLive()
+        {
+            return TryReadLive(true);
+        }
+
+        public SessionSnapshot TryReadLive(bool rebuildStandings)
         {
             try
             {
                 if (_mmf == null || _acc == null)
                 {
+                    long nowTicks = Environment.TickCount;
+                    if (nowTicks - _nextOpenAttemptTicks < 0)
+                        return null;
+                    _nextOpenAttemptTicks = nowTicks + 1000; // Probe at most once per second when disconnected
+
+                    IntPtr hMap = OpenFileMapping(FILE_MAP_READ, false, "Local\\IRSDKMemMapFileName");
+                    if (hMap == IntPtr.Zero)
+                        return null;
+                    CloseHandle(hMap);
+
                     CloseMapping();
                     _mmf = MemoryMappedFile.OpenExisting("Local\\IRSDKMemMapFileName", MemoryMappedFileRights.Read);
                     _acc = _mmf.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
@@ -1860,6 +1987,11 @@ namespace FreeOverlay
 
                 if (numVars <= 0 || bufLen <= 0 || sessionInfoLen <= 0) return null;
 
+                if (numVars != _cachedNumVars || varHeaderOffset != _cachedVarHeaderOffset)
+                {
+                    RefreshVarOffsets(numVars, varHeaderOffset);
+                }
+
                 int bestTick = -1;
                 int bestBufOffset = 0;
                 for (int i = 0; i < numBuf && i < 4; i++)
@@ -1874,111 +2006,48 @@ namespace FreeOverlay
                     }
                 }
 
-                int headersLen = numVars * 144;
-                if (_varHeadersBuf == null || _varHeadersBuf.Length != headersLen)
-                    _varHeadersBuf = new byte[headersLen];
-                _acc.ReadArray(varHeaderOffset, _varHeadersBuf, 0, headersLen);
-
                 if (_dataBuf == null || _dataBuf.Length != bufLen)
                     _dataBuf = new byte[bufLen];
                 _acc.ReadArray(bestBufOffset, _dataBuf, 0, bufLen);
 
-                Array.Clear(_pos, 0, 64);
-                Array.Clear(_lap, 0, 64);
-                Array.Clear(_lastLap, 0, 64);
-                Array.Clear(_bestLap, 0, 64);
-                Array.Clear(_lapDist, 0, 64);
-                Array.Clear(_f2Time, 0, 64);
-                Array.Clear(_onPit, 0, 64);
-
-                int playerCarIdx = 0;
-                int playerTrackSurface = 3;
-                int sessionNum = 0;
-                double sessionTimeRemain = 0;
-                int sessionLapsRemain = 0;
-                float trackTemp = 32f;
+                int playerCarIdx = _offPlayerCarIdx >= 0 ? BitConverter.ToInt32(_dataBuf, _offPlayerCarIdx) : 0;
+                int playerTrackSurface = _offPlayerTrackSurface >= 0 ? BitConverter.ToInt32(_dataBuf, _offPlayerTrackSurface) : 3;
+                int sessionNum = _offSessionNum >= 0 ? BitConverter.ToInt32(_dataBuf, _offSessionNum) : 0;
+                double sessionTimeRemain = _offSessionTimeRemain >= 0 ? BitConverter.ToDouble(_dataBuf, _offSessionTimeRemain) : 0.0;
+                int sessionLapsRemain = _offSessionLapsRemainEx >= 0 ? BitConverter.ToInt32(_dataBuf, _offSessionLapsRemainEx) : 0;
+                float trackTemp = _offTrackTempCrew >= 0 ? BitConverter.ToSingle(_dataBuf, _offTrackTempCrew) : 32f;
 
                 // Native 60Hz Delta Bar variables from iRacing SDK
-                float deltaSessionBest = 0f;
-                float deltaSessionBestDD = 0f;
-                float lapBestLapTime = 0f;
+                float deltaSessionBest = _offDeltaSessionBest >= 0 ? BitConverter.ToSingle(_dataBuf, _offDeltaSessionBest) : 0f;
+                float deltaSessionBestDD = _offDeltaSessionBestDD >= 0 ? BitConverter.ToSingle(_dataBuf, _offDeltaSessionBestDD) : 0f;
+                float lapBestLapTime = _offLapBestLapTime >= 0 ? BitConverter.ToSingle(_dataBuf, _offLapBestLapTime) : 0f;
 
-                float deltaSessionOpt = 0f;
-                float deltaSessionOptDD = 0f;
+                float deltaSessionOpt = _offDeltaSessionOpt >= 0 ? BitConverter.ToSingle(_dataBuf, _offDeltaSessionOpt) : 0f;
+                float deltaSessionOptDD = _offDeltaSessionOptDD >= 0 ? BitConverter.ToSingle(_dataBuf, _offDeltaSessionOptDD) : 0f;
 
-                float deltaBest = 0f;
-                float deltaBestDD = 0f;
+                float deltaBest = _offDeltaBest >= 0 ? BitConverter.ToSingle(_dataBuf, _offDeltaBest) : 0f;
+                float deltaBestDD = _offDeltaBestDD >= 0 ? BitConverter.ToSingle(_dataBuf, _offDeltaBestDD) : 0f;
 
-                float deltaLast = 0f;
-                float deltaLastDD = 0f;
-                float lapLastLapTime = 0f;
+                float deltaLast = _offDeltaLast >= 0 ? BitConverter.ToSingle(_dataBuf, _offDeltaLast) : 0f;
+                float deltaLastDD = _offDeltaLastDD >= 0 ? BitConverter.ToSingle(_dataBuf, _offDeltaLastDD) : 0f;
+                float lapLastLapTime = _offLapLastLapTime >= 0 ? BitConverter.ToSingle(_dataBuf, _offLapLastLapTime) : 0f;
 
                 // Player live pedal, speed, gear & distance telemetry for Garage61 Braking Coach
-                float playerBrakeRaw = 0f;
-                float playerThrottleRaw = 0f;
-                float playerSpeedMs = 0f;
-                int playerGearVal = 0;
-                float scalarLapDistPct = -1f;
+                float playerBrakeRaw = _offBrake >= 0 ? BitConverter.ToSingle(_dataBuf, _offBrake) : 0f;
+                float playerThrottleRaw = _offThrottle >= 0 ? BitConverter.ToSingle(_dataBuf, _offThrottle) : 0f;
+                float playerSpeedMs = _offSpeed >= 0 ? BitConverter.ToSingle(_dataBuf, _offSpeed) : 0f;
+                int playerGearVal = _offGear >= 0 ? BitConverter.ToInt32(_dataBuf, _offGear) : 0;
+                float scalarLapDistPct = _offLapDistPct >= 0 ? BitConverter.ToSingle(_dataBuf, _offLapDistPct) : -1f;
 
-                for (int v = 0; v < numVars; v++)
+                float playerPct = scalarLapDistPct;
+                if (playerPct < 0f && _offCarIdxLapDist >= 0 && playerCarIdx >= 0 && playerCarIdx < _cntCarIdxLapDist)
                 {
-                    int hOff = v * 144;
-                    int vOffset = BitConverter.ToInt32(_varHeadersBuf, hOff + 4);
-                    int vCount = BitConverter.ToInt32(_varHeadersBuf, hOff + 8);
-                    string vName = ReadCString(_varHeadersBuf, hOff + 16, 32);
-
-                    if (vName == "PlayerCarIdx") playerCarIdx = BitConverter.ToInt32(_dataBuf, vOffset);
-                    else if (vName == "PlayerTrackSurface") playerTrackSurface = BitConverter.ToInt32(_dataBuf, vOffset);
-                    else if (vName == "SessionNum") sessionNum = BitConverter.ToInt32(_dataBuf, vOffset);
-                    else if (vName == "SessionTimeRemain") sessionTimeRemain = BitConverter.ToDouble(_dataBuf, vOffset);
-                    else if (vName == "SessionLapsRemainEx") sessionLapsRemain = BitConverter.ToInt32(_dataBuf, vOffset);
-                    else if (vName == "TrackTempCrew") trackTemp = BitConverter.ToSingle(_dataBuf, vOffset);
-                    else if (vName == "LapDeltaToSessionBestLap") deltaSessionBest = BitConverter.ToSingle(_dataBuf, vOffset);
-                    else if (vName == "LapDeltaToSessionBestLap_DD") deltaSessionBestDD = BitConverter.ToSingle(_dataBuf, vOffset);
-                    else if (vName == "LapBestLapTime") lapBestLapTime = BitConverter.ToSingle(_dataBuf, vOffset);
-                    else if (vName == "LapDeltaToSessionOptimalLap") deltaSessionOpt = BitConverter.ToSingle(_dataBuf, vOffset);
-                    else if (vName == "LapDeltaToSessionOptimalLap_DD") deltaSessionOptDD = BitConverter.ToSingle(_dataBuf, vOffset);
-                    else if (vName == "LapDeltaToBestLap") deltaBest = BitConverter.ToSingle(_dataBuf, vOffset);
-                    else if (vName == "LapDeltaToBestLap_DD") deltaBestDD = BitConverter.ToSingle(_dataBuf, vOffset);
-                    else if (vName == "LapDeltaToSessionLastLap") deltaLast = BitConverter.ToSingle(_dataBuf, vOffset);
-                    else if (vName == "LapDeltaToSessionLastLap_DD") deltaLastDD = BitConverter.ToSingle(_dataBuf, vOffset);
-                    else if (vName == "LapLastLapTime") lapLastLapTime = BitConverter.ToSingle(_dataBuf, vOffset);
-                    else if (vName == "Brake") playerBrakeRaw = BitConverter.ToSingle(_dataBuf, vOffset);
-                    else if (vName == "Throttle") playerThrottleRaw = BitConverter.ToSingle(_dataBuf, vOffset);
-                    else if (vName == "Speed") playerSpeedMs = BitConverter.ToSingle(_dataBuf, vOffset);
-                    else if (vName == "Gear") playerGearVal = BitConverter.ToInt32(_dataBuf, vOffset);
-                    else if (vName == "LapDistPct") scalarLapDistPct = BitConverter.ToSingle(_dataBuf, vOffset);
-                    else if (vName == "CarIdxPosition")
-                    {
-                        for (int c = 0; c < Math.Min(64, vCount); c++) _pos[c] = BitConverter.ToInt32(_dataBuf, vOffset + c * 4);
-                    }
-                    else if (vName == "CarIdxLap")
-                    {
-                        for (int c = 0; c < Math.Min(64, vCount); c++) _lap[c] = BitConverter.ToInt32(_dataBuf, vOffset + c * 4);
-                    }
-                    else if (vName == "CarIdxLastLapTime")
-                    {
-                        for (int c = 0; c < Math.Min(64, vCount); c++) _lastLap[c] = BitConverter.ToSingle(_dataBuf, vOffset + c * 4);
-                    }
-                    else if (vName == "CarIdxBestLapTime")
-                    {
-                        for (int c = 0; c < Math.Min(64, vCount); c++) _bestLap[c] = BitConverter.ToSingle(_dataBuf, vOffset + c * 4);
-                    }
-                    else if (vName == "CarIdxLapDistPct")
-                    {
-                        for (int c = 0; c < Math.Min(64, vCount); c++) _lapDist[c] = BitConverter.ToSingle(_dataBuf, vOffset + c * 4);
-                    }
-                    else if (vName == "CarIdxF2Time")
-                    {
-                        for (int c = 0; c < Math.Min(64, vCount); c++) _f2Time[c] = BitConverter.ToSingle(_dataBuf, vOffset + c * 4);
-                    }
-                    else if (vName == "CarIdxOnPitRoad")
-                    {
-                        for (int c = 0; c < Math.Min(64, vCount); c++) _onPit[c] = _dataBuf[vOffset + c] != 0;
-                    }
+                    playerPct = BitConverter.ToSingle(_dataBuf, _offCarIdxLapDist + playerCarIdx * 4);
                 }
+                if (playerPct < 0f) playerPct = 0f;
 
                 // Only read and regex-parse the 100KB+ SessionInfo YAML when iRacing increments sessionInfoUpdate
+                bool yamlUpdated = false;
                 if (_cachedYamlDrivers.Count == 0 ||
                     sessionInfoUpdate != _cachedSessionInfoUpdate ||
                     sessionInfoLen != _cachedSessionInfoLen ||
@@ -1991,11 +2060,13 @@ namespace FreeOverlay
                     _cachedSessionInfoUpdate = sessionInfoUpdate;
                     _cachedSessionInfoLen = sessionInfoLen;
                     _cachedSessionInfoOffset = sessionInfoOffset;
+                    yamlUpdated = true;
                 }
                 else if (sessionNum != _cachedSessionNum && !string.IsNullOrEmpty(_cachedYaml))
                 {
                     _cachedSessionNum = sessionNum;
                     _cachedSessionType = ExtractSessionTypeFromYaml(_cachedYaml, sessionNum);
+                    yamlUpdated = true;
                 }
 
                 if (_cachedYamlDrivers.Count == 0) return null;
@@ -2004,94 +2075,124 @@ namespace FreeOverlay
                 string sessionType = _cachedSessionType;
                 bool isRaceSession = (sessionType == "RACE");
 
-                List<DriverRow> rows = new List<DriverRow>(_cachedYamlDrivers.Count);
-                float sessionBest = float.MaxValue;
-
-                for (int i = 0; i < _cachedYamlDrivers.Count; i++)
+                if (rebuildStandings || yamlUpdated || _cachedSortedDrivers.Count == 0)
                 {
-                    CachedYamlDriver cd = _cachedYamlDrivers[i];
-                    int cIdx = cd.CarIdx;
-                    float bLap = _bestLap[cIdx];
-                    float lLap = _lastLap[cIdx];
-                    if (cIdx == playerCarIdx)
+                    Array.Clear(_pos, 0, 64);
+                    Array.Clear(_lap, 0, 64);
+                    Array.Clear(_lastLap, 0, 64);
+                    Array.Clear(_bestLap, 0, 64);
+                    Array.Clear(_lapDist, 0, 64);
+                    Array.Clear(_f2Time, 0, 64);
+                    Array.Clear(_onPit, 0, 64);
+
+                    if (_offCarIdxPos >= 0)
+                        for (int c = 0; c < _cntCarIdxPos; c++) _pos[c] = BitConverter.ToInt32(_dataBuf, _offCarIdxPos + c * 4);
+                    if (_offCarIdxLap >= 0)
+                        for (int c = 0; c < _cntCarIdxLap; c++) _lap[c] = BitConverter.ToInt32(_dataBuf, _offCarIdxLap + c * 4);
+                    if (_offCarIdxLastLap >= 0)
+                        for (int c = 0; c < _cntCarIdxLastLap; c++) _lastLap[c] = BitConverter.ToSingle(_dataBuf, _offCarIdxLastLap + c * 4);
+                    if (_offCarIdxBestLap >= 0)
+                        for (int c = 0; c < _cntCarIdxBestLap; c++) _bestLap[c] = BitConverter.ToSingle(_dataBuf, _offCarIdxBestLap + c * 4);
+                    if (_offCarIdxLapDist >= 0)
+                        for (int c = 0; c < _cntCarIdxLapDist; c++) _lapDist[c] = BitConverter.ToSingle(_dataBuf, _offCarIdxLapDist + c * 4);
+                    if (_offCarIdxF2Time >= 0)
+                        for (int c = 0; c < _cntCarIdxF2Time; c++) _f2Time[c] = BitConverter.ToSingle(_dataBuf, _offCarIdxF2Time + c * 4);
+                    if (_offCarIdxOnPit >= 0)
+                        for (int c = 0; c < _cntCarIdxOnPit; c++) _onPit[c] = _dataBuf[_offCarIdxOnPit + c] != 0;
+
+                    List<DriverRow> rows = new List<DriverRow>(_cachedYamlDrivers.Count);
+                    float sessionBest = float.MaxValue;
+
+                    for (int i = 0; i < _cachedYamlDrivers.Count; i++)
                     {
-                        if (bLap <= 0f && lapBestLapTime > 0f) bLap = lapBestLapTime;
-                        if (lLap <= 0f && lapLastLapTime > 0f) lLap = lapLastLapTime;
+                        CachedYamlDriver cd = _cachedYamlDrivers[i];
+                        int cIdx = cd.CarIdx;
+                        float bLap = _bestLap[cIdx];
+                        float lLap = _lastLap[cIdx];
+                        if (cIdx == playerCarIdx)
+                        {
+                            if (bLap <= 0f && lapBestLapTime > 0f) bLap = lapBestLapTime;
+                            if (lLap <= 0f && lapLastLapTime > 0f) lLap = lapLastLapTime;
+                        }
+                        if (bLap > 0f && bLap < sessionBest) sessionBest = bLap;
+
+                        DriverRow row = new DriverRow();
+                        row.CarIdx = cIdx;
+                        row.Position = _pos[cIdx];
+                        row.CarNumber = cd.CarNumber;
+                        row.UserName = cd.UserName;
+                        row.ClubName = cd.ClubName;
+                        row.CountryCode = cd.CountryCode;
+                        row.IRating = cd.IRating;
+                        row.LicClass = cd.LicClass;
+                        row.SafetyRating = cd.SafetyRating;
+                        row.LastLapSec = lLap > 0f ? lLap : 0f;
+                        row.BestLapSec = bLap > 0f ? bLap : 0f;
+                        row.GapToLeaderSec = Math.Max(0f, _f2Time[cIdx]);
+                        row.Lap = _lap[cIdx];
+                        row.LapDistPct = _lapDist[cIdx];
+                        row.OnPitRoad = _onPit[cIdx];
+                        row.IsPlayer = (cIdx == playerCarIdx);
+                        rows.Add(row);
                     }
-                    if (bLap > 0f && bLap < sessionBest) sessionBest = bLap;
 
-                    DriverRow row = new DriverRow();
-                    row.CarIdx = cIdx;
-                    row.Position = _pos[cIdx];
-                    row.CarNumber = cd.CarNumber;
-                    row.UserName = cd.UserName;
-                    row.ClubName = cd.ClubName;
-                    row.CountryCode = cd.CountryCode;
-                    row.IRating = cd.IRating;
-                    row.LicClass = cd.LicClass;
-                    row.SafetyRating = cd.SafetyRating;
-                    row.LastLapSec = lLap > 0f ? lLap : 0f;
-                    row.BestLapSec = bLap > 0f ? bLap : 0f;
-                    row.GapToLeaderSec = Math.Max(0f, _f2Time[cIdx]);
-                    row.Lap = _lap[cIdx];
-                    row.LapDistPct = _lapDist[cIdx];
-                    row.OnPitRoad = _onPit[cIdx];
-                    row.IsPlayer = (cIdx == playerCarIdx);
-                    rows.Add(row);
-                }
-
-                rows.Sort(delegate(DriverRow a, DriverRow b)
-                {
-                    if (a.Position > 0 && b.Position > 0) return a.Position.CompareTo(b.Position);
-                    if (a.Position > 0) return -1;
-                    if (b.Position > 0) return 1;
-                    if (!isRaceSession)
+                    rows.Sort(delegate(DriverRow a, DriverRow b)
                     {
-                        if (a.BestLapSec > 0f && b.BestLapSec > 0f) return a.BestLapSec.CompareTo(b.BestLapSec);
-                        if (a.BestLapSec > 0f) return -1;
-                        if (b.BestLapSec > 0f) return 1;
-                    }
-                    float progA = a.Lap + a.LapDistPct;
-                    float progB = b.Lap + b.LapDistPct;
-                    if (Math.Abs(progA - progB) > 0.001f) return progB.CompareTo(progA);
-                    return b.IRating.CompareTo(a.IRating);
-                });
-
-                int irSum = 0;
-                for (int i = 0; i < rows.Count; i++) irSum += rows[i].IRating;
-                int sof = irSum / rows.Count;
-
-                int maxLap = 1;
-                float leaderBestLap = rows[0].BestLapSec;
-                for (int i = 0; i < rows.Count; i++)
-                {
-                    DriverRow d = rows[i];
-                    d.Position = i + 1;
-                    if (d.Lap > maxLap) maxLap = d.Lap;
-                    if (i == 0)
-                    {
-                        d.GapToLeaderSec = 0f;
-                        d.IntervalAheadSec = 0f;
-                    }
-                    else
-                    {
+                        if (a.Position > 0 && b.Position > 0) return a.Position.CompareTo(b.Position);
+                        if (a.Position > 0) return -1;
+                        if (b.Position > 0) return 1;
                         if (!isRaceSession)
                         {
-                            d.GapToLeaderSec = (d.BestLapSec > 0f && leaderBestLap > 0f)
-                                ? Math.Max(0f, d.BestLapSec - leaderBestLap)
-                                : 0f;
+                            if (a.BestLapSec > 0f && b.BestLapSec > 0f) return a.BestLapSec.CompareTo(b.BestLapSec);
+                            if (a.BestLapSec > 0f) return -1;
+                            if (b.BestLapSec > 0f) return 1;
                         }
-                        d.IntervalAheadSec = Math.Max(0f, d.GapToLeaderSec - rows[i - 1].GapToLeaderSec);
+                        float progA = a.Lap + a.LapDistPct;
+                        float progB = b.Lap + b.LapDistPct;
+                        if (Math.Abs(progA - progB) > 0.001f) return progB.CompareTo(progA);
+                        return b.IRating.CompareTo(a.IRating);
+                    });
+
+                    int irSum = 0;
+                    for (int i = 0; i < rows.Count; i++) irSum += rows[i].IRating;
+                    _cachedSof = irSum / rows.Count;
+
+                    int maxLap = 1;
+                    float leaderBestLap = rows[0].BestLapSec;
+                    for (int i = 0; i < rows.Count; i++)
+                    {
+                        DriverRow d = rows[i];
+                        d.Position = i + 1;
+                        if (d.Lap > maxLap) maxLap = d.Lap;
+                        if (i == 0)
+                        {
+                            d.GapToLeaderSec = 0f;
+                            d.IntervalAheadSec = 0f;
+                        }
+                        else
+                        {
+                            if (!isRaceSession)
+                            {
+                                d.GapToLeaderSec = (d.BestLapSec > 0f && leaderBestLap > 0f)
+                                    ? Math.Max(0f, d.BestLapSec - leaderBestLap)
+                                    : 0f;
+                            }
+                            d.IntervalAheadSec = Math.Max(0f, d.GapToLeaderSec - rows[i - 1].GapToLeaderSec);
+                        }
+
+                        if (d.LastLapSec > 0f && Math.Abs(d.LastLapSec - sessionBest) < 0.003f)
+                            d.LastLapStatus = LapStatus.SessionBest;
+                        else if (d.LastLapSec > 0f && d.BestLapSec > 0f && Math.Abs(d.LastLapSec - d.BestLapSec) < 0.003f)
+                            d.LastLapStatus = LapStatus.PersonalBest;
+                        else
+                            d.LastLapStatus = LapStatus.Normal;
+
+                        d.IRatingDelta = CountryResolver.EstimateIRatingDelta(d.Position, rows.Count, d.IRating, _cachedSof);
                     }
 
-                    if (d.LastLapSec > 0f && Math.Abs(d.LastLapSec - sessionBest) < 0.003f)
-                        d.LastLapStatus = LapStatus.SessionBest;
-                    else if (d.LastLapSec > 0f && d.BestLapSec > 0f && Math.Abs(d.LastLapSec - d.BestLapSec) < 0.003f)
-                        d.LastLapStatus = LapStatus.PersonalBest;
-                    else
-                        d.LastLapStatus = LapStatus.Normal;
-
-                    d.IRatingDelta = CountryResolver.EstimateIRatingDelta(d.Position, rows.Count, d.IRating, sof);
+                    _cachedSortedDrivers = rows;
+                    _cachedMaxLap = maxLap;
+                    _cachedSessionBestLap = sessionBest;
                 }
 
                 // Official track sectors cached from iRacing SDK YAML (SplitTimeInfo -> Sectors)
@@ -2112,7 +2213,6 @@ namespace FreeOverlay
                     _lastSectorIdx = 0;
                 }
 
-                float playerPct = (playerCarIdx >= 0 && playerCarIdx < 64) ? _lapDist[playerCarIdx] : 0f;
                 int curSecIdx = 0;
                 for (int sIdx = secCount - 1; sIdx >= 0; sIdx--)
                 {
@@ -2173,7 +2273,7 @@ namespace FreeOverlay
                 _prevDeltaLast = deltaLast;
 
                 DeltaTelemetryData dt = new DeltaTelemetryData();
-                dt.SessionBestLapSec = lapBestLapTime > 0f ? lapBestLapTime : (sessionBest < float.MaxValue ? sessionBest : 0f);
+                dt.SessionBestLapSec = lapBestLapTime > 0f ? lapBestLapTime : (_cachedSessionBestLap < float.MaxValue ? _cachedSessionBestLap : 0f);
                 dt.DeltaSessionBestSec = deltaSessionBest;
                 dt.DeltaSessionBestRate = deltaSessionBestDD;
 
@@ -2191,11 +2291,11 @@ namespace FreeOverlay
 
                 dt.SectorStartPcts = sectorPcts;
                 dt.ActiveSectorIndex = curSecIdx;
-                dt.SectorDeltasSessionBest = (float[])_secSplitBest.Clone();
-                dt.SectorDeltasOptimal = (float[])_secSplitOpt.Clone();
-                dt.SectorDeltasPersonalBest = (float[])_secSplitPers.Clone();
-                dt.SectorDeltasLastLap = (float[])_secSplitLast.Clone();
-                dt.SectorDone = (bool[])_secDone.Clone();
+                dt.SectorDeltasSessionBest = _secSplitBest;
+                dt.SectorDeltasOptimal = _secSplitOpt;
+                dt.SectorDeltasPersonalBest = _secSplitPers;
+                dt.SectorDeltasLastLap = _secSplitLast;
+                dt.SectorDone = _secDone;
                 dt.OffTrack = (playerTrackSurface == 0);
 
                 SessionSnapshot snap = new SessionSnapshot();
@@ -2203,14 +2303,14 @@ namespace FreeOverlay
                 snap.IsLiveSource = true;
                 snap.TrackName = trackName;
                 snap.SessionType = sessionType;
-                snap.StrengthOfField = sof;
-                snap.CurrentLap = maxLap;
+                snap.StrengthOfField = _cachedSof;
+                snap.CurrentLap = _cachedMaxLap;
                 snap.TotalLaps = (sessionLapsRemain > 0 && sessionLapsRemain < 32767) ? sessionLapsRemain : 0;
                 snap.SessionTimeRemainSec = Math.Max(0.0, sessionTimeRemain);
                 snap.TrackTempC = trackTemp;
-                snap.Drivers = rows;
+                snap.Drivers = _cachedSortedDrivers;
                 snap.Delta = dt;
-                snap.PlayerLapDistPct = scalarLapDistPct >= 0f ? scalarLapDistPct : playerPct;
+                snap.PlayerLapDistPct = playerPct;
                 snap.TrackLengthMeters = _cachedTrackLenMeters;
                 snap.PlayerBrakePct = Math.Max(0f, Math.Min(100f, playerBrakeRaw * 100.0f));
                 snap.PlayerThrottlePct = Math.Max(0f, Math.Min(100f, playerThrottleRaw * 100.0f));
@@ -2269,6 +2369,30 @@ namespace FreeOverlay
         private Rectangle _rectCornerModeBtn;
         private Rectangle _rectRefCycleBtn;
 
+        private float _cachedFontScale = -1f;
+        private Font _fLabel;
+        private Font _fSubMono;
+        private Font _fBigDelta;
+        private Font _fIconAa;
+        private readonly StringFormat _centerFmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+        private readonly StringFormat _leftFmt = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
+        private readonly StringFormat _rightFmt = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center };
+
+        private void EnsureFonts(float s)
+        {
+            if (Math.Abs(_cachedFontScale - s) < 0.001f && _fLabel != null) return;
+            if (_fLabel != null) _fLabel.Dispose();
+            if (_fSubMono != null) _fSubMono.Dispose();
+            if (_fBigDelta != null) _fBigDelta.Dispose();
+            if (_fIconAa != null) _fIconAa.Dispose();
+
+            _fLabel = new Font("Segoe UI", 10.5f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+            _fSubMono = new Font("Consolas", 12.0f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+            _fBigDelta = new Font("Consolas", 21.0f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+            _fIconAa = new Font("Segoe UI", 11.5f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+            _cachedFontScale = s;
+        }
+
         public DeltaBarForm(OverlaySettings settings, SessionSnapshot initialSnapshot)
         {
             _settings = settings;
@@ -2285,17 +2409,23 @@ namespace FreeOverlay
             Opacity = _settings.DeltaOpacity;
 
             _dpiScale = DpiHelper.GetScale(IntPtr.Zero);
+            int savedX = _settings.DeltaX;
+            int savedY = _settings.DeltaY;
+            int savedW = _settings.DeltaW;
+            int savedH = _settings.DeltaH;
+
             ResetPositionAndSize(false);
 
-            if (_settings.DeltaW > 100 && _settings.DeltaH > 50)
+            if (savedW > 100 && savedH > 50)
             {
-                Width = _settings.DeltaW;
-                Height = _settings.DeltaH;
+                Width = savedW;
+                Height = savedH;
             }
-            if (_settings.DeltaX >= 0 && _settings.DeltaY >= 0)
+            if (savedX != -1 || savedY != -1)
             {
-                Location = new Point(_settings.DeltaX, _settings.DeltaY);
+                Location = new Point(savedX, savedY);
             }
+            SaveGeometry();
         }
 
         private float EffectiveScale
@@ -2315,12 +2445,24 @@ namespace FreeOverlay
             Invalidate();
         }
 
-        private void SaveGeometry()
+        public void SaveGeometry()
         {
             _settings.DeltaX = Left;
             _settings.DeltaY = Top;
             _settings.DeltaW = Width;
             _settings.DeltaH = Height;
+        }
+
+        protected override void OnMove(EventArgs e)
+        {
+            base.OnMove(e);
+            if (IsHandleCreated) SaveGeometry();
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            if (IsHandleCreated) SaveGeometry();
         }
 
         protected override void OnHandleCreated(EventArgs e)
@@ -2589,14 +2731,15 @@ namespace FreeOverlay
                 ? Color.FromArgb(74, 222, 128)
                 : Color.FromArgb(248, 113, 113);
 
-            using (Font fLabel = new Font("Segoe UI", 10.5f * s, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (Font fSubMono = new Font("Consolas", 12.0f * s, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (Font fBigDelta = new Font("Consolas", 21.0f * s, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (Font fIconAa = new Font("Segoe UI", 11.5f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            EnsureFonts(s);
+            Font fLabel = _fLabel;
+            Font fSubMono = _fSubMono;
+            Font fBigDelta = _fBigDelta;
+            Font fIconAa = _fIconAa;
             {
-                StringFormat centerFmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                StringFormat leftFmt = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
-                StringFormat rightFmt = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center };
+                StringFormat centerFmt = _centerFmt;
+                StringFormat leftFmt = _leftFmt;
+                StringFormat rightFmt = _rightFmt;
 
                 int padX = (int)Math.Round(12 * s);
                 int topY = (int)Math.Round(8 * s);
@@ -2831,6 +2974,46 @@ namespace FreeOverlay
         private Rectangle _rectCarNumBtn;
         private Rectangle _rectLockBtn;
 
+        private float _cachedFontScale = -1f;
+        private Font _fBrand;
+        private Font _fSmallBold;
+        private Font _fIconAa;
+        private Font _fHeader;
+        private Font _fRow;
+        private Font _fRowBold;
+        private Font _fMono;
+        private readonly StringFormat _centerFmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+        private readonly StringFormat _rightFmt = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center };
+        private readonly StringFormat _leftFmt = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
+        private readonly StringFormat _trackFmt = new StringFormat
+        {
+            Alignment = StringAlignment.Near,
+            LineAlignment = StringAlignment.Center,
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap
+        };
+
+        private void EnsureFonts(float s)
+        {
+            if (Math.Abs(_cachedFontScale - s) < 0.001f && _fBrand != null) return;
+            if (_fBrand != null) _fBrand.Dispose();
+            if (_fSmallBold != null) _fSmallBold.Dispose();
+            if (_fIconAa != null) _fIconAa.Dispose();
+            if (_fHeader != null) _fHeader.Dispose();
+            if (_fRow != null) _fRow.Dispose();
+            if (_fRowBold != null) _fRowBold.Dispose();
+            if (_fMono != null) _fMono.Dispose();
+
+            _fBrand = new Font("Segoe UI", 11.5f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+            _fSmallBold = new Font("Segoe UI", 10.2f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+            _fIconAa = new Font("Segoe UI", 11.5f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+            _fHeader = new Font("Segoe UI", 11.5f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+            _fRow = new Font("Segoe UI", 12.2f * s, FontStyle.Regular, GraphicsUnit.Pixel);
+            _fRowBold = new Font("Segoe UI", 12.2f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+            _fMono = new Font("Consolas", 12.6f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+            _cachedFontScale = s;
+        }
+
         public OverlayForm(OverlaySettings settings, SessionSnapshot initialSnapshot)
         {
             _settings = settings;
@@ -2847,17 +3030,23 @@ namespace FreeOverlay
             Opacity = _settings.StandingsOpacity;
 
             _dpiScale = DpiHelper.GetScale(IntPtr.Zero);
+            int savedX = _settings.StandingsX;
+            int savedY = _settings.StandingsY;
+            int savedW = _settings.StandingsW;
+            int savedH = _settings.StandingsH;
+
             ResetPositionAndSize(false);
 
-            if (_settings.StandingsW > 200 && _settings.StandingsH > 120)
+            if (savedW > 200 && savedH > 120)
             {
-                Width = _settings.StandingsW;
-                Height = _settings.StandingsH;
+                Width = savedW;
+                Height = savedH;
             }
-            if (_settings.StandingsX >= 0 && _settings.StandingsY >= 0)
+            if (savedX != -1 || savedY != -1)
             {
-                Location = new Point(_settings.StandingsX, _settings.StandingsY);
+                Location = new Point(savedX, savedY);
             }
+            SaveGeometry();
         }
 
         private float EffectiveScale
@@ -2877,12 +3066,24 @@ namespace FreeOverlay
             Invalidate();
         }
 
-        private void SaveGeometry()
+        public void SaveGeometry()
         {
             _settings.StandingsX = Left;
             _settings.StandingsY = Top;
             _settings.StandingsW = Width;
             _settings.StandingsH = Height;
+        }
+
+        protected override void OnMove(EventArgs e)
+        {
+            base.OnMove(e);
+            if (IsHandleCreated) SaveGeometry();
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            if (IsHandleCreated) SaveGeometry();
         }
 
         protected override void OnHandleCreated(EventArgs e)
@@ -3149,7 +3350,7 @@ namespace FreeOverlay
             }
         }
 
-        private static void DrawCountryFlag(Graphics g, int x, int y, int w, int h, string code, float s)
+        public static void DrawCountryFlag(Graphics g, int x, int y, int w, int h, string code, float s)
         {
             Rectangle r = new Rectangle(x, y, w, h);
             using (SolidBrush bg = new SolidBrush(Color.FromArgb(30, 41, 59)))
@@ -3314,17 +3515,18 @@ namespace FreeOverlay
             int footerH = (int)Math.Round(26 * s);
             int rowH = (int)Math.Round(29 * s);
 
-            using (Font fBrand = new Font("Segoe UI", 11.5f * s, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (Font fSmallBold = new Font("Segoe UI", 10.2f * s, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (Font fIconAa = new Font("Segoe UI", 11.5f * s, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (Font fHeader = new Font("Segoe UI", 11.5f * s, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (Font fRow = new Font("Segoe UI", 12.2f * s, FontStyle.Regular, GraphicsUnit.Pixel))
-            using (Font fRowBold = new Font("Segoe UI", 12.2f * s, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (Font fMono = new Font("Consolas", 12.6f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            EnsureFonts(s);
+            Font fBrand = _fBrand;
+            Font fSmallBold = _fSmallBold;
+            Font fIconAa = _fIconAa;
+            Font fHeader = _fHeader;
+            Font fRow = _fRow;
+            Font fRowBold = _fRowBold;
+            Font fMono = _fMono;
             {
-                StringFormat centerFmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                StringFormat rightFmt = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center };
-                StringFormat leftFmt = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
+                StringFormat centerFmt = _centerFmt;
+                StringFormat rightFmt = _rightFmt;
+                StringFormat leftFmt = _leftFmt;
 
                 using (SolidBrush tbBg = new SolidBrush(Color.FromArgb(9, 11, 17)))
                 {
@@ -3456,13 +3658,7 @@ namespace FreeOverlay
                 int metaW = (int)Math.Ceiling(metaSz.Width) + (int)(12 * s);
                 int availTrackW = Math.Max(50, Width - trackX - metaW - (int)(10 * s));
 
-                StringFormat trackFmt = new StringFormat
-                {
-                    Alignment = StringAlignment.Near,
-                    LineAlignment = StringAlignment.Center,
-                    Trimming = StringTrimming.EllipsisCharacter,
-                    FormatFlags = StringFormatFlags.NoWrap
-                };
+                StringFormat trackFmt = _trackFmt;
                 g.DrawString(_snapshot.TrackName, fHeader, Brushes.Gainsboro, new RectangleF(trackX, sessY, availTrackW, sessionH), trackFmt);
 
                 using (SolidBrush goldB = new SolidBrush(Color.FromArgb(253, 224, 71)))
@@ -3774,6 +3970,39 @@ namespace FreeOverlay
         private Rectangle _rectStyleCycleBtn;
         private Rectangle _rectAudioToggleBtn;
 
+        private const int GRAPH_SAMPLES = 72;
+        private readonly PointF[] _g61BrakeBuf = new PointF[GRAPH_SAMPLES + 1];
+        private readonly PointF[] _g61ThrotBuf = new PointF[GRAPH_SAMPLES + 1];
+        private PointF[] _youBrakeBuf = new PointF[0];
+        private PointF[] _youThrotBuf = new PointF[0];
+
+        private float _cachedFontScale = -1f;
+        private Font _fHeader;
+        private Font _fSmall;
+        private Font _fMono;
+        private Font _fBigMono;
+        private Font _fIconAa;
+        private readonly StringFormat _leftFmt = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
+        private readonly StringFormat _rightFmt = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center };
+        private readonly StringFormat _centerFmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+
+        private void EnsureFonts(float s)
+        {
+            if (Math.Abs(_cachedFontScale - s) < 0.001f && _fHeader != null) return;
+            if (_fHeader != null) _fHeader.Dispose();
+            if (_fSmall != null) _fSmall.Dispose();
+            if (_fMono != null) _fMono.Dispose();
+            if (_fBigMono != null) _fBigMono.Dispose();
+            if (_fIconAa != null) _fIconAa.Dispose();
+
+            _fHeader = new Font("Segoe UI", 10.5f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+            _fSmall = new Font("Segoe UI", 9.5f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+            _fMono = new Font("Consolas", 11.5f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+            _fBigMono = new Font("Consolas", 15.0f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+            _fIconAa = new Font("Segoe UI", 11.5f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+            _cachedFontScale = s;
+        }
+
         public Garage61OverlayForm(OverlaySettings settings, Garage61LapManager g61, SessionSnapshot initialSnapshot)
         {
             _settings = settings;
@@ -3791,17 +4020,23 @@ namespace FreeOverlay
             Opacity = _settings.Garage61Opacity;
 
             _dpiScale = DpiHelper.GetScale(IntPtr.Zero);
+            int savedX = _settings.Garage61X;
+            int savedY = _settings.Garage61Y;
+            int savedW = _settings.Garage61W;
+            int savedH = _settings.Garage61H;
+
             ResetPositionAndSize(false);
 
-            if (_settings.Garage61W > 200 && _settings.Garage61H > 70)
+            if (savedW > 200 && savedH > 70)
             {
-                Width = _settings.Garage61W;
-                Height = _settings.Garage61H;
+                Width = savedW;
+                Height = savedH;
             }
-            if (_settings.Garage61X >= 0 && _settings.Garage61Y >= 0)
+            if (savedX != -1 || savedY != -1)
             {
-                Location = new Point(_settings.Garage61X, _settings.Garage61Y);
+                Location = new Point(savedX, savedY);
             }
+            SaveGeometry();
         }
 
         private float EffectiveScale
@@ -3845,12 +4080,24 @@ namespace FreeOverlay
             Invalidate();
         }
 
-        private void SaveGeometry()
+        public void SaveGeometry()
         {
             _settings.Garage61X = Left;
             _settings.Garage61Y = Top;
             _settings.Garage61W = Width;
             _settings.Garage61H = Height;
+        }
+
+        protected override void OnMove(EventArgs e)
+        {
+            base.OnMove(e);
+            if (IsHandleCreated) SaveGeometry();
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            if (IsHandleCreated) SaveGeometry();
         }
 
         protected override void OnHandleCreated(EventArgs e)
@@ -4229,12 +4476,22 @@ namespace FreeOverlay
                 g.DrawLine(peakPen, graphRect.Left + 2, peakY, graphRect.Right - 2, peakY);
             }
 
-            int numSamples = 140;
-            List<PointF> g61BrakePts = new List<PointF>(numSamples + 1);
-            List<PointF> g61ThrotPts = new List<PointF>(numSamples + 1);
-            List<PointF> youBrakePts = new List<PointF>(numSamples + 2);
-            List<PointF> youThrotPts = new List<PointF>(numSamples + 2);
+            int numSamples = GRAPH_SAMPLES;
+            int youCount = 0;
+            for (int i = 0; i <= numSamples; i++)
+            {
+                float frac = (float)i / numSamples;
+                float dp = -winPastPct + frac * totalWinPct;
+                if (dp < -0.0002f) youCount++;
+            }
+            int totalYouPts = youCount + 1;
+            if (_youBrakeBuf.Length != totalYouPts)
+            {
+                _youBrakeBuf = new PointF[totalYouPts];
+                _youThrotBuf = new PointF[totalYouPts];
+            }
 
+            int yIdx = 0;
             for (int i = 0; i <= numSamples; i++)
             {
                 float frac = (float)i / numSamples;
@@ -4246,46 +4503,45 @@ namespace FreeOverlay
                 float rt = _g61.GetRefThrottleAtPct(samplePct);
                 float yb = graphRect.Bottom - botPad - (rb / 100.0f) * plotH;
                 float yt = graphRect.Bottom - botPad - (rt / 100.0f) * plotH;
-                g61BrakePts.Add(new PointF(x, yb));
-                g61ThrotPts.Add(new PointF(x, yt));
+                _g61BrakeBuf[i] = new PointF(x, yb);
+                _g61ThrotBuf[i] = new PointF(x, yt);
 
-                if (dp < -0.0002f)
+                if (dp < -0.0002f && yIdx < youCount)
                 {
                     float pb = _g61.GetPlayerBrakeAtPct(samplePct);
                     float pt = _g61.GetPlayerThrottleAtPct(samplePct);
                     float pyb = graphRect.Bottom - botPad - (pb / 100.0f) * plotH;
                     float pyt = graphRect.Bottom - botPad - (pt / 100.0f) * plotH;
-                    youBrakePts.Add(new PointF(x, pyb));
-                    youThrotPts.Add(new PointF(x, pyt));
+                    _youBrakeBuf[yIdx] = new PointF(x, pyb);
+                    _youThrotBuf[yIdx] = new PointF(x, pyt);
+                    yIdx++;
                 }
             }
 
             // Anchor the live tip of the player trace squarely on NOW (dp = 0, x = nowX)
             float nowYb = graphRect.Bottom - botPad - (_snapshot.PlayerBrakePct / 100.0f) * plotH;
             float nowYt = graphRect.Bottom - botPad - (_snapshot.PlayerThrottlePct / 100.0f) * plotH;
-            youBrakePts.Add(new PointF(nowX, nowYb));
-            youThrotPts.Add(new PointF(nowX, nowYt));
+            _youBrakeBuf[totalYouPts - 1] = new PointF(nowX, nowYb);
+            _youThrotBuf[totalYouPts - 1] = new PointF(nowX, nowYt);
 
-            // Draw Throttle traces (G61 dashed green, Player solid green)
+            // Draw Throttle traces (G61 reference translucent green, Player solid green)
             using (Pen g61ThrPen = new Pen(Color.FromArgb(115, 52, 211, 153), Math.Max(1.2f, 1.4f * s)))
             {
-                g61ThrPen.DashStyle = DashStyle.Dash;
-                if (g61ThrotPts.Count > 1) g.DrawLines(g61ThrPen, g61ThrotPts.ToArray());
+                g.DrawLines(g61ThrPen, _g61ThrotBuf);
             }
-            using (Pen youThrPen = new Pen(Color.FromArgb(210, 16, 185, 129), Math.Max(1.5f, 1.8f * s)))
+            using (Pen youThrPen = new Pen(Color.FromArgb(220, 16, 185, 129), Math.Max(1.6f, 1.9f * s)))
             {
-                if (youThrotPts.Count > 1) g.DrawLines(youThrPen, youThrotPts.ToArray());
+                if (totalYouPts > 1) g.DrawLines(youThrPen, _youThrotBuf);
             }
 
-            // Draw Brake traces (G61 dashed cyan extending into Lookahead, Player solid bright red up to NOW)
-            using (Pen g61BrkPen = new Pen(Color.FromArgb(235, 56, 189, 248), Math.Max(1.8f, 2.2f * s)))
+            // Draw Brake traces (G61 reference cyan extending into Lookahead, Player solid bright red up to NOW)
+            using (Pen g61BrkPen = new Pen(Color.FromArgb(215, 56, 189, 248), Math.Max(1.8f, 2.1f * s)))
             {
-                g61BrkPen.DashStyle = DashStyle.Dash;
-                if (g61BrakePts.Count > 1) g.DrawLines(g61BrkPen, g61BrakePts.ToArray());
+                g.DrawLines(g61BrkPen, _g61BrakeBuf);
             }
             using (Pen youBrkPen = new Pen(Color.FromArgb(255, 244, 63, 94), Math.Max(2.2f, 2.8f * s)))
             {
-                if (youBrakePts.Count > 1) g.DrawLines(youBrkPen, youBrakePts.ToArray());
+                if (totalYouPts > 1) g.DrawLines(youBrkPen, _youBrakeBuf);
             }
 
             // Highlight any G61 Braking Point marker (and 3-2-1 prep ticks) inside the visible window
@@ -4380,15 +4636,16 @@ namespace FreeOverlay
             BrakingZoneInfo relZone = _g61.GetRelevantZone(nowPct, out distToZone, trackLen);
             float peakTarget = relZone != null ? relZone.PeakBrake : 84f;
 
-            using (Font fHeader = new Font("Segoe UI", 10.5f * s, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (Font fSmall = new Font("Segoe UI", 9.5f * s, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (Font fMono = new Font("Consolas", 11.5f * s, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (Font fBigMono = new Font("Consolas", 15.0f * s, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (Font fIconAa = new Font("Segoe UI", 11.5f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            EnsureFonts(s);
+            Font fHeader = _fHeader;
+            Font fSmall = _fSmall;
+            Font fMono = _fMono;
+            Font fBigMono = _fBigMono;
+            Font fIconAa = _fIconAa;
             {
-                StringFormat leftFmt = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
-                StringFormat rightFmt = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center };
-                StringFormat centerFmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                StringFormat leftFmt = _leftFmt;
+                StringFormat rightFmt = _rightFmt;
+                StringFormat centerFmt = _centerFmt;
 
                 int pad = (int)Math.Round(10 * s);
                 int topY = (int)Math.Round(6 * s);
@@ -4495,7 +4752,8 @@ namespace FreeOverlay
                     int innerW = leftBox.Width - inPad * 2;
 
                     // 1. Brake Pressure Bar
-                    g.DrawString("BRAKE", fSmall, new SolidBrush(Color.FromArgb(251, 113, 133)), new RectangleF(leftBox.Left + inPad, curY, innerW * 0.5f, 15 * s), leftFmt);
+                    using (SolidBrush brkLblB = new SolidBrush(Color.FromArgb(251, 113, 133)))
+                        g.DrawString("BRAKE", fSmall, brkLblB, new RectangleF(leftBox.Left + inPad, curY, innerW * 0.5f, 15 * s), leftFmt);
                     string bValTxt = string.Format(CultureInfo.InvariantCulture, "{0:0}% / {1:0}%", youBrk, g61Brk);
                     g.DrawString(bValTxt, fMono, Brushes.White, new RectangleF(leftBox.Left + inPad, curY, innerW, 15 * s), rightFmt);
                     curY += (int)Math.Round(16 * s);
@@ -4519,7 +4777,8 @@ namespace FreeOverlay
                     curY += brkBarH + (int)Math.Round(8 * s);
 
                     // 2. Throttle Bar
-                    g.DrawString("THROTTLE", fSmall, new SolidBrush(Color.FromArgb(52, 211, 153)), new RectangleF(leftBox.Left + inPad, curY, innerW * 0.55f, 15 * s), leftFmt);
+                    using (SolidBrush thrLblB = new SolidBrush(Color.FromArgb(52, 211, 153)))
+                        g.DrawString("THROTTLE", fSmall, thrLblB, new RectangleF(leftBox.Left + inPad, curY, innerW * 0.55f, 15 * s), leftFmt);
                     string tValTxt = string.Format(CultureInfo.InvariantCulture, "{0:0}% / {1:0}%", youThr, g61Thr);
                     g.DrawString(tValTxt, fMono, Brushes.White, new RectangleF(leftBox.Left + inPad, curY, innerW, 15 * s), rightFmt);
                     curY += (int)Math.Round(16 * s);
@@ -4711,6 +4970,9 @@ namespace FreeOverlay
         private SessionSnapshot _lastSnapshot;
         private float _dpiScale = 1.0f;
         private int _tickCounter = 0;
+        private bool _lastHubConnected = false;
+        private bool _lastHubIsLive = false;
+        private int _activeTab = 0; // 0 = Standings, 1 = Delta Bar, 2 = Garage61 Coach
 
         // Interactive Hub hit rectangles
         private Rectangle _btnLockAll;
@@ -4718,8 +4980,14 @@ namespace FreeOverlay
         private Rectangle _btnHideHub;
         private Rectangle _btnQuitApp;
 
-        // Standings Card controls
+        // Top Widget Tabs
+        private Rectangle _tabStandings;
+        private Rectangle _tabDeltaBar;
+        private Rectangle _tabGarage61;
+
+        // Standings Tab controls
         private Rectangle _btnStandingsToggle;
+        private Rectangle _btnStandingsAutoOpen;
         private Rectangle _btnStandingsCarNum;
         private Rectangle _btnStandingsGap;
         private Rectangle _btnStandingsCompactIr;
@@ -4730,8 +4998,9 @@ namespace FreeOverlay
         private Rectangle _btnStandingsOpacPlus;
         private Rectangle _btnStandingsReset;
 
-        // Delta Bar Card controls
+        // Delta Bar Tab controls
         private Rectangle _btnDeltaToggle;
+        private Rectangle _btnDeltaAutoOpen;
         private Rectangle _btnDeltaRefBest;
         private Rectangle _btnDeltaRefOpt;
         private Rectangle _btnDeltaRefPers;
@@ -4746,8 +5015,9 @@ namespace FreeOverlay
         private Rectangle _btnDeltaOpacPlus;
         private Rectangle _btnDeltaReset;
 
-        // Garage61 Card controls
+        // Garage61 Tab controls
         private Rectangle _btnG61Toggle;
+        private Rectangle _btnG61AutoOpen;
         private Rectangle _btnG61StyleA;
         private Rectangle _btnG61StyleB;
         private Rectangle _btnG61StyleC;
@@ -4795,24 +5065,27 @@ namespace FreeOverlay
             BackColor = Color.FromArgb(11, 14, 21);
 
             _dpiScale = DpiHelper.GetScale(IntPtr.Zero);
-            Width = (int)Math.Round(1080 * _dpiScale);
-            Height = (int)Math.Round(560 * _dpiScale);
+            Width = (int)Math.Round(1180 * _dpiScale);
+            Height = (int)Math.Round(590 * _dpiScale);
 
             ContextMenu trayMenu = new ContextMenu();
             trayMenu.MenuItems.Add("Open Free Overlay Hub (F5)", delegate(object s, EventArgs e) { ToggleHubVisibility(); });
             trayMenu.MenuItems.Add("Toggle Standings Overlay", delegate(object s, EventArgs e)
             {
                 _settings.StandingsEnabled = !_settings.StandingsEnabled;
+                _settings.StandingsAutoOpen = _settings.StandingsEnabled;
                 _settings.NotifyChanged();
             });
             trayMenu.MenuItems.Add("Toggle Delta Bar Overlay", delegate(object s, EventArgs e)
             {
                 _settings.DeltaBarEnabled = !_settings.DeltaBarEnabled;
+                _settings.DeltaBarAutoOpen = _settings.DeltaBarEnabled;
                 _settings.NotifyChanged();
             });
             trayMenu.MenuItems.Add("Toggle Garage61 Coach Overlay", delegate(object s, EventArgs e)
             {
                 _settings.Garage61Enabled = !_settings.Garage61Enabled;
+                _settings.Garage61AutoOpen = _settings.Garage61Enabled;
                 _settings.NotifyChanged();
             });
             trayMenu.MenuItems.Add("Toggle Braking Audio Cues", delegate(object s, EventArgs e)
@@ -4854,8 +5127,8 @@ namespace FreeOverlay
         {
             base.OnHandleCreated(e);
             _dpiScale = DpiHelper.GetScale(Handle);
-            Width = (int)Math.Round(1080 * _dpiScale);
-            Height = (int)Math.Round(560 * _dpiScale);
+            Width = (int)Math.Round(1180 * _dpiScale);
+            Height = (int)Math.Round(590 * _dpiScale);
 
             RegisterHotKey(Handle, HOTKEY_HUB, 0, (uint)Keys.F5);
             RegisterHotKey(Handle, HOTKEY_LOCK, 0, (uint)Keys.F6);
@@ -4867,6 +5140,10 @@ namespace FreeOverlay
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            if (_standingsForm != null) _standingsForm.SaveGeometry();
+            if (_deltaBarForm != null) _deltaBarForm.SaveGeometry();
+            if (_garage61Form != null) _garage61Form.SaveGeometry();
+            _settings.Save();
             timeEndPeriod(1);
             UnregisterHotKey(Handle, HOTKEY_HUB);
             UnregisterHotKey(Handle, HOTKEY_LOCK);
@@ -4882,6 +5159,9 @@ namespace FreeOverlay
 
         private void ExitAll()
         {
+            if (_standingsForm != null) _standingsForm.SaveGeometry();
+            if (_deltaBarForm != null) _deltaBarForm.SaveGeometry();
+            if (_garage61Form != null) _garage61Form.SaveGeometry();
             _settings.Save();
             _timer.Stop();
             timeEndPeriod(1);
@@ -4950,11 +5230,24 @@ namespace FreeOverlay
             _frameStopwatch.Restart();
             if (dtSec <= 0.001 || dtSec > 0.25) dtSec = 0.01667;
 
+            bool anyOverlayEnabled = _settings.StandingsEnabled || _settings.DeltaBarEnabled || _settings.Garage61Enabled;
+            int targetInterval = anyOverlayEnabled ? 16 : 200;
+            if (_timer.Interval != targetInterval)
+            {
+                _timer.Interval = targetInterval;
+            }
+
+            if (!anyOverlayEnabled && !Visible)
+            {
+                return;
+            }
+
+            bool needStandingsRebuild = _settings.StandingsEnabled && (_tickCounter % 12 == 0);
             SessionSnapshot snap = null;
 
             if (_settings.Mode == TelemetryMode.Live || _settings.Mode == TelemetryMode.Auto)
             {
-                snap = _liveReader.TryReadLive();
+                snap = _liveReader.TryReadLive(needStandingsRebuild);
             }
 
             if (snap == null)
@@ -4974,17 +5267,25 @@ namespace FreeOverlay
             }
 
             _lastSnapshot = snap;
-            bool allowAudio = _settings.Garage61Enabled && _settings.Garage61AudioEnabled && snap.Connected;
-            _g61Manager.UpdatePlayerTelemetry(snap.PlayerLapDistPct, snap.PlayerBrakePct, snap.PlayerThrottlePct, snap.TrackLengthMeters, snap.PlayerSpeedKph, allowAudio);
 
-            if (_settings.DeltaBarEnabled && _deltaBarForm.Visible)
+            if (_settings.Garage61Enabled)
             {
-                _deltaBarForm.UpdateSnapshot(snap);
+                bool allowAudio = _settings.Garage61AudioEnabled && snap.Connected;
+                _g61Manager.UpdatePlayerTelemetry(snap.PlayerLapDistPct, snap.PlayerBrakePct, snap.PlayerThrottlePct, snap.TrackLengthMeters, snap.PlayerSpeedKph, allowAudio);
             }
 
-            if (_settings.Garage61Enabled && _garage61Form.Visible)
+            // Repaint Delta Bar & Garage61 at 30 FPS (every 2nd tick = 32ms) while sampling telemetry & audio at 60 Hz
+            if (_tickCounter % 2 == 0)
             {
-                _garage61Form.UpdateSnapshot(snap);
+                if (_settings.DeltaBarEnabled && _deltaBarForm.Visible)
+                {
+                    _deltaBarForm.UpdateSnapshot(snap);
+                }
+
+                if (_settings.Garage61Enabled && _garage61Form.Visible)
+                {
+                    _garage61Form.UpdateSnapshot(snap);
+                }
             }
 
             // Update Standings at ~5 Hz (every 12 ticks at 60 FPS = ~200ms)
@@ -4993,8 +5294,11 @@ namespace FreeOverlay
                 _standingsForm.UpdateSnapshot(snap);
             }
 
-            if (Visible && (_tickCounter % 15 == 0))
+            // Only repaint ControlCenterForm when telemetry connection/source state changes
+            if (Visible && (snap.Connected != _lastHubConnected || snap.IsLiveSource != _lastHubIsLive))
             {
+                _lastHubConnected = snap.Connected;
+                _lastHubIsLive = snap.IsLiveSource;
                 Invalidate();
             }
         }
@@ -5029,8 +5333,8 @@ namespace FreeOverlay
                 if (newDpi >= 72 && newDpi <= 480)
                 {
                     _dpiScale = newDpi / 96.0f;
-                    Width = (int)Math.Round(1080 * _dpiScale);
-                    Height = (int)Math.Round(560 * _dpiScale);
+                    Width = (int)Math.Round(1180 * _dpiScale);
+                    Height = (int)Math.Round(590 * _dpiScale);
                     Invalidate();
                 }
             }
@@ -5095,257 +5399,303 @@ namespace FreeOverlay
                 return;
             }
 
-            // Standings card buttons
-            if (_btnStandingsToggle.Contains(pt))
+            // Tab switching
+            if (_tabStandings.Contains(pt))
             {
-                _settings.StandingsEnabled = !_settings.StandingsEnabled;
-                _settings.NotifyChanged();
+                _activeTab = 0;
+                Invalidate();
                 return;
             }
-            if (_btnStandingsCarNum.Contains(pt))
+            if (_tabDeltaBar.Contains(pt))
             {
-                _settings.ShowCarNumber = !_settings.ShowCarNumber;
-                _settings.NotifyChanged();
+                _activeTab = 1;
+                Invalidate();
                 return;
             }
-            if (_btnStandingsGap.Contains(pt))
+            if (_tabGarage61.Contains(pt))
             {
-                _settings.ShowInterval = !_settings.ShowInterval;
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnStandingsCompactIr.Contains(pt))
-            {
-                _settings.CompactIR = !_settings.CompactIR;
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnStandingsDeltaIr.Contains(pt))
-            {
-                _settings.ShowDeltaIR = !_settings.ShowDeltaIR;
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnStandingsFontMinus.Contains(pt))
-            {
-                _settings.StandingsFontScale = Math.Max(0.65f, (float)Math.Round(_settings.StandingsFontScale - 0.05f, 2));
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnStandingsFontPlus.Contains(pt))
-            {
-                _settings.StandingsFontScale = Math.Min(1.75f, (float)Math.Round(_settings.StandingsFontScale + 0.05f, 2));
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnStandingsOpacMinus.Contains(pt))
-            {
-                _settings.StandingsOpacity = Math.Max(0.45f, (float)Math.Round(_settings.StandingsOpacity - 0.05f, 2));
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnStandingsOpacPlus.Contains(pt))
-            {
-                _settings.StandingsOpacity = Math.Min(1.0f, (float)Math.Round(_settings.StandingsOpacity + 0.05f, 2));
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnStandingsReset.Contains(pt))
-            {
-                _settings.StandingsFontScale = 1.0f;
-                _standingsForm.ResetPositionAndSize(true);
+                _activeTab = 2;
+                Invalidate();
                 return;
             }
 
-            // Delta Bar card buttons
-            if (_btnDeltaToggle.Contains(pt))
+            // Active Tab Controls
+            if (_activeTab == 0)
             {
-                _settings.DeltaBarEnabled = !_settings.DeltaBarEnabled;
-                _settings.NotifyChanged();
-                return;
+                if (_btnStandingsToggle.Contains(pt))
+                {
+                    _settings.StandingsEnabled = !_settings.StandingsEnabled;
+                    _settings.StandingsAutoOpen = _settings.StandingsEnabled;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnStandingsAutoOpen.Contains(pt))
+                {
+                    _settings.StandingsAutoOpen = !_settings.StandingsAutoOpen;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnStandingsCarNum.Contains(pt))
+                {
+                    _settings.ShowCarNumber = !_settings.ShowCarNumber;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnStandingsGap.Contains(pt))
+                {
+                    _settings.ShowInterval = !_settings.ShowInterval;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnStandingsCompactIr.Contains(pt))
+                {
+                    _settings.CompactIR = !_settings.CompactIR;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnStandingsDeltaIr.Contains(pt))
+                {
+                    _settings.ShowDeltaIR = !_settings.ShowDeltaIR;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnStandingsFontMinus.Contains(pt))
+                {
+                    _settings.StandingsFontScale = Math.Max(0.65f, (float)Math.Round(_settings.StandingsFontScale - 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnStandingsFontPlus.Contains(pt))
+                {
+                    _settings.StandingsFontScale = Math.Min(1.75f, (float)Math.Round(_settings.StandingsFontScale + 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnStandingsOpacMinus.Contains(pt))
+                {
+                    _settings.StandingsOpacity = Math.Max(0.45f, (float)Math.Round(_settings.StandingsOpacity - 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnStandingsOpacPlus.Contains(pt))
+                {
+                    _settings.StandingsOpacity = Math.Min(1.0f, (float)Math.Round(_settings.StandingsOpacity + 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnStandingsReset.Contains(pt))
+                {
+                    _settings.StandingsFontScale = 1.0f;
+                    _standingsForm.ResetPositionAndSize(true);
+                    return;
+                }
             }
-            if (_btnDeltaRefBest.Contains(pt))
+            else if (_activeTab == 1)
             {
-                _settings.DeltaRefMode = DeltaReferenceMode.SessionBest;
-                _settings.NotifyChanged();
-                return;
+                if (_btnDeltaToggle.Contains(pt))
+                {
+                    _settings.DeltaBarEnabled = !_settings.DeltaBarEnabled;
+                    _settings.DeltaBarAutoOpen = _settings.DeltaBarEnabled;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnDeltaAutoOpen.Contains(pt))
+                {
+                    _settings.DeltaBarAutoOpen = !_settings.DeltaBarAutoOpen;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnDeltaRefBest.Contains(pt))
+                {
+                    _settings.DeltaRefMode = DeltaReferenceMode.SessionBest;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnDeltaRefOpt.Contains(pt))
+                {
+                    _settings.DeltaRefMode = DeltaReferenceMode.SessionOptimal;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnDeltaRefPers.Contains(pt))
+                {
+                    _settings.DeltaRefMode = DeltaReferenceMode.PersonalBest;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnDeltaRefLast.Contains(pt))
+                {
+                    _settings.DeltaRefMode = DeltaReferenceMode.LastLap;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnDeltaRange1.Contains(pt))
+                {
+                    _settings.DeltaBarRangeSec = 1.0f;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnDeltaRange2.Contains(pt))
+                {
+                    _settings.DeltaBarRangeSec = 2.0f;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnDeltaRange5.Contains(pt))
+                {
+                    _settings.DeltaBarRangeSec = 5.0f;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnDeltaSectors.Contains(pt))
+                {
+                    _settings.ShowSectorSplits = !_settings.ShowSectorSplits;
+                    _deltaBarForm.ResetPositionAndSize(true);
+                    return;
+                }
+                if (_btnDeltaFontMinus.Contains(pt))
+                {
+                    _settings.DeltaFontScale = Math.Max(0.65f, (float)Math.Round(_settings.DeltaFontScale - 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnDeltaFontPlus.Contains(pt))
+                {
+                    _settings.DeltaFontScale = Math.Min(1.75f, (float)Math.Round(_settings.DeltaFontScale + 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnDeltaOpacMinus.Contains(pt))
+                {
+                    _settings.DeltaOpacity = Math.Max(0.45f, (float)Math.Round(_settings.DeltaOpacity - 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnDeltaOpacPlus.Contains(pt))
+                {
+                    _settings.DeltaOpacity = Math.Min(1.0f, (float)Math.Round(_settings.DeltaOpacity + 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnDeltaReset.Contains(pt))
+                {
+                    _settings.DeltaFontScale = 1.0f;
+                    _deltaBarForm.ResetPositionAndSize(true);
+                    return;
+                }
             }
-            if (_btnDeltaRefOpt.Contains(pt))
+            else if (_activeTab == 2)
             {
-                _settings.DeltaRefMode = DeltaReferenceMode.SessionOptimal;
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnDeltaRefPers.Contains(pt))
-            {
-                _settings.DeltaRefMode = DeltaReferenceMode.PersonalBest;
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnDeltaRefLast.Contains(pt))
-            {
-                _settings.DeltaRefMode = DeltaReferenceMode.LastLap;
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnDeltaRange1.Contains(pt))
-            {
-                _settings.DeltaBarRangeSec = 1.0f;
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnDeltaRange2.Contains(pt))
-            {
-                _settings.DeltaBarRangeSec = 2.0f;
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnDeltaRange5.Contains(pt))
-            {
-                _settings.DeltaBarRangeSec = 5.0f;
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnDeltaSectors.Contains(pt))
-            {
-                _settings.ShowSectorSplits = !_settings.ShowSectorSplits;
-                _deltaBarForm.ResetPositionAndSize(true);
-                return;
-            }
-            if (_btnDeltaFontMinus.Contains(pt))
-            {
-                _settings.DeltaFontScale = Math.Max(0.65f, (float)Math.Round(_settings.DeltaFontScale - 0.05f, 2));
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnDeltaFontPlus.Contains(pt))
-            {
-                _settings.DeltaFontScale = Math.Min(1.75f, (float)Math.Round(_settings.DeltaFontScale + 0.05f, 2));
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnDeltaOpacMinus.Contains(pt))
-            {
-                _settings.DeltaOpacity = Math.Max(0.45f, (float)Math.Round(_settings.DeltaOpacity - 0.05f, 2));
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnDeltaOpacPlus.Contains(pt))
-            {
-                _settings.DeltaOpacity = Math.Min(1.0f, (float)Math.Round(_settings.DeltaOpacity + 0.05f, 2));
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnDeltaReset.Contains(pt))
-            {
-                _settings.DeltaFontScale = 1.0f;
-                _deltaBarForm.ResetPositionAndSize(true);
-                return;
-            }
-
-            // Garage61 Coach card buttons
-            if (_btnG61Toggle.Contains(pt))
-            {
-                _settings.Garage61Enabled = !_settings.Garage61Enabled;
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnG61StyleA.Contains(pt))
-            {
-                _settings.Garage61Style = Garage61LayoutStyle.OptionA_LookaheadTraceAndPedals;
-                _garage61Form.ApplyDefaultSizeForCurrentStyle(true);
-                return;
-            }
-            if (_btnG61StyleB.Contains(pt))
-            {
-                _settings.Garage61Style = Garage61LayoutStyle.OptionB_CompactBrakeCoach;
-                _garage61Form.ApplyDefaultSizeForCurrentStyle(true);
-                return;
-            }
-            if (_btnG61StyleC.Contains(pt))
-            {
-                _settings.Garage61Style = Garage61LayoutStyle.OptionC_ProBoxWithCornerAudit;
-                _garage61Form.ApplyDefaultSizeForCurrentStyle(true);
-                return;
-            }
-            if (_btnG61AudioToggle.Contains(pt))
-            {
-                _settings.Garage61AudioEnabled = !_settings.Garage61AudioEnabled;
-                _settings.NotifyChanged();
-                if (_settings.Garage61AudioEnabled)
+                if (_btnG61Toggle.Contains(pt))
+                {
+                    _settings.Garage61Enabled = !_settings.Garage61Enabled;
+                    _settings.Garage61AutoOpen = _settings.Garage61Enabled;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnG61AutoOpen.Contains(pt))
+                {
+                    _settings.Garage61AutoOpen = !_settings.Garage61AutoOpen;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnG61StyleA.Contains(pt))
+                {
+                    _settings.Garage61Style = Garage61LayoutStyle.OptionA_LookaheadTraceAndPedals;
+                    _garage61Form.ApplyDefaultSizeForCurrentStyle(true);
+                    return;
+                }
+                if (_btnG61StyleB.Contains(pt))
+                {
+                    _settings.Garage61Style = Garage61LayoutStyle.OptionB_CompactBrakeCoach;
+                    _garage61Form.ApplyDefaultSizeForCurrentStyle(true);
+                    return;
+                }
+                if (_btnG61StyleC.Contains(pt))
+                {
+                    _settings.Garage61Style = Garage61LayoutStyle.OptionC_ProBoxWithCornerAudit;
+                    _garage61Form.ApplyDefaultSizeForCurrentStyle(true);
+                    return;
+                }
+                if (_btnG61AudioToggle.Contains(pt))
+                {
+                    _settings.Garage61AudioEnabled = !_settings.Garage61AudioEnabled;
+                    _settings.NotifyChanged();
+                    if (_settings.Garage61AudioEnabled)
+                    {
+                        BrakingAudioCoach.PlayTestSequence();
+                    }
+                    return;
+                }
+                if (_btnG61AudioTest.Contains(pt))
                 {
                     BrakingAudioCoach.PlayTestSequence();
+                    return;
                 }
-                return;
-            }
-            if (_btnG61AudioTest.Contains(pt))
-            {
-                BrakingAudioCoach.PlayTestSequence();
-                return;
-            }
-            if (_btnG61Look80.Contains(pt))
-            {
-                _settings.Garage61LookaheadMeters = 80;
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnG61Look120.Contains(pt))
-            {
-                _settings.Garage61LookaheadMeters = 120;
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnG61Look180.Contains(pt))
-            {
-                _settings.Garage61LookaheadMeters = 180;
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnG61LoadCsv.Contains(pt))
-            {
-                PromptLoadGarage61Csv();
-                return;
-            }
-            if (_btnG61DefaultLap.Contains(pt))
-            {
-                _settings.Garage61CsvPath = "";
-                _g61Manager.BuildDefaultSpaReferenceLap();
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnG61FontMinus.Contains(pt))
-            {
-                _settings.Garage61FontScale = Math.Max(0.65f, (float)Math.Round(_settings.Garage61FontScale - 0.05f, 2));
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnG61FontPlus.Contains(pt))
-            {
-                _settings.Garage61FontScale = Math.Min(1.75f, (float)Math.Round(_settings.Garage61FontScale + 0.05f, 2));
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnG61OpacMinus.Contains(pt))
-            {
-                _settings.Garage61Opacity = Math.Max(0.45f, (float)Math.Round(_settings.Garage61Opacity - 0.05f, 2));
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnG61OpacPlus.Contains(pt))
-            {
-                _settings.Garage61Opacity = Math.Min(1.0f, (float)Math.Round(_settings.Garage61Opacity + 0.05f, 2));
-                _settings.NotifyChanged();
-                return;
-            }
-            if (_btnG61Reset.Contains(pt))
-            {
-                _settings.Garage61FontScale = 1.0f;
-                _garage61Form.ResetPositionAndSize(true);
-                return;
+                if (_btnG61Look80.Contains(pt))
+                {
+                    _settings.Garage61LookaheadMeters = 80;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnG61Look120.Contains(pt))
+                {
+                    _settings.Garage61LookaheadMeters = 120;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnG61Look180.Contains(pt))
+                {
+                    _settings.Garage61LookaheadMeters = 180;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnG61LoadCsv.Contains(pt))
+                {
+                    PromptLoadGarage61Csv();
+                    return;
+                }
+                if (_btnG61DefaultLap.Contains(pt))
+                {
+                    _settings.Garage61CsvPath = "";
+                    _g61Manager.BuildDefaultSpaReferenceLap();
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnG61FontMinus.Contains(pt))
+                {
+                    _settings.Garage61FontScale = Math.Max(0.65f, (float)Math.Round(_settings.Garage61FontScale - 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnG61FontPlus.Contains(pt))
+                {
+                    _settings.Garage61FontScale = Math.Min(1.75f, (float)Math.Round(_settings.Garage61FontScale + 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnG61OpacMinus.Contains(pt))
+                {
+                    _settings.Garage61Opacity = Math.Max(0.45f, (float)Math.Round(_settings.Garage61Opacity - 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnG61OpacPlus.Contains(pt))
+                {
+                    _settings.Garage61Opacity = Math.Min(1.0f, (float)Math.Round(_settings.Garage61Opacity + 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnG61Reset.Contains(pt))
+                {
+                    _settings.Garage61FontScale = 1.0f;
+                    _garage61Form.ResetPositionAndSize(true);
+                    return;
+                }
             }
 
             // Drag Hub window by top header bar
-            if (pt.Y < (int)Math.Round(60 * _dpiScale))
+            if (pt.Y < (int)Math.Round(56 * _dpiScale))
             {
                 ReleaseCapture();
                 SendMessage(Handle, WM_NCLBUTTONDOWN, HT_CAPTION, 0);
@@ -5371,6 +5721,542 @@ namespace FreeOverlay
             return r;
         }
 
+        private static Rectangle DrawTabButton(Graphics g, Font fTab, Font fBadge, string title, bool isOpenNow, bool isAutoOpen, int x, int y, int w, int h, bool selected, float s)
+        {
+            Rectangle r = new Rectangle(x, y, w, h);
+            Color bg = selected ? Color.FromArgb(24, 32, 48) : Color.FromArgb(13, 17, 26);
+            Color border = selected ? Color.FromArgb(210, 56, 189, 248) : Color.FromArgb(38, 255, 255, 255);
+
+            using (SolidBrush b = new SolidBrush(bg)) g.FillRectangle(b, r);
+            using (Pen p = new Pen(border, 1.0f)) g.DrawRectangle(p, r);
+
+            if (selected)
+            {
+                using (SolidBrush accent = new SolidBrush(Color.FromArgb(56, 189, 248)))
+                {
+                    g.FillRectangle(accent, x, y, (int)Math.Max(3, Math.Round(4 * s)), h);
+                }
+            }
+
+            StringFormat leftFmt = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
+            StringFormat centerFmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+
+            int padX = (int)Math.Round(12 * s);
+            Color titleCol = selected ? Color.White : Color.FromArgb(170, 180, 195);
+            using (SolidBrush tb = new SolidBrush(titleCol))
+            {
+                g.DrawString(title, fTab, tb, new RectangleF(x + padX, y + (int)(5 * s), w - padX * 2, (int)(22 * s)), leftFmt);
+            }
+
+            // Status pills on bottom row of vertical tab item
+            int badgeH = (int)Math.Round(18 * s);
+            int badgeY = y + h - badgeH - (int)Math.Round(7 * s);
+            int openW = (int)Math.Round(52 * s);
+            int autoW = (int)Math.Round(68 * s);
+
+            Rectangle openRect = new Rectangle(x + padX, badgeY, openW, badgeH);
+            Color openBg = isOpenNow ? Color.FromArgb(45, 34, 197, 94) : Color.FromArgb(35, 107, 114, 128);
+            Color openFg = isOpenNow ? Color.FromArgb(74, 222, 128) : Color.FromArgb(156, 163, 175);
+            using (SolidBrush ob = new SolidBrush(openBg)) g.FillRectangle(ob, openRect);
+            using (Pen op = new Pen(Color.FromArgb(120, openFg.R, openFg.G, openFg.B), 1f)) g.DrawRectangle(op, openRect);
+            using (SolidBrush otb = new SolidBrush(openFg))
+            {
+                g.DrawString(isOpenNow ? "OPEN" : "OFF", fBadge, otb, openRect, centerFmt);
+            }
+
+            Rectangle autoRect = new Rectangle(openRect.Right + (int)Math.Round(6 * s), badgeY, autoW, badgeH);
+            Color autoBg = isAutoOpen ? Color.FromArgb(40, 56, 189, 248) : Color.FromArgb(30, 107, 114, 128);
+            Color autoFg = isAutoOpen ? Color.FromArgb(125, 211, 252) : Color.FromArgb(156, 163, 175);
+            using (SolidBrush ab = new SolidBrush(autoBg)) g.FillRectangle(ab, autoRect);
+            using (Pen ap = new Pen(Color.FromArgb(110, autoFg.R, autoFg.G, autoFg.B), 1f)) g.DrawRectangle(ap, autoRect);
+            using (SolidBrush atb = new SolidBrush(autoFg))
+            {
+                g.DrawString(isAutoOpen ? "AUTO: ON" : "AUTO: OFF", fBadge, atb, autoRect, centerFmt);
+            }
+
+            return r;
+        }
+
+        private void DrawSimulatedViewportFrame(Graphics g, Rectangle vp, string captionTitle, string captionSub, float s)
+        {
+            using (LinearGradientBrush bg = new LinearGradientBrush(
+                vp,
+                Color.FromArgb(12, 17, 27),
+                Color.FromArgb(18, 25, 38),
+                LinearGradientMode.Vertical))
+            {
+                g.FillRectangle(bg, vp);
+            }
+
+            // Subtle simulated cockpit / asphalt grid lines in background
+            int horizonY = vp.Top + (int)(vp.Height * 0.36f);
+            using (Pen gridPen = new Pen(Color.FromArgb(18, 148, 163, 184), 1f))
+            {
+                g.DrawLine(gridPen, vp.Left, horizonY, vp.Right, horizonY);
+                for (int i = 1; i <= 5; i++)
+                {
+                    int gy = horizonY + (int)((vp.Bottom - horizonY) * (i / 5.0f));
+                    g.DrawLine(gridPen, vp.Left, gy, vp.Right, gy);
+                }
+                int cx = vp.Left + vp.Width / 2;
+                g.DrawLine(gridPen, cx - (int)(70 * s), horizonY, vp.Left + (int)(20 * s), vp.Bottom);
+                g.DrawLine(gridPen, cx + (int)(70 * s), horizonY, vp.Right - (int)(20 * s), vp.Bottom);
+            }
+
+            using (Pen borderPen = new Pen(Color.FromArgb(65, 56, 189, 248), 1f))
+            {
+                g.DrawRectangle(borderPen, vp);
+            }
+
+            // Bottom description strip inside preview viewport
+            int capH = (int)Math.Round(46 * s);
+            Rectangle capRect = new Rectangle(vp.Left, vp.Bottom - capH, vp.Width, capH);
+            using (SolidBrush cb = new SolidBrush(Color.FromArgb(225, 11, 15, 24)))
+            {
+                g.FillRectangle(cb, capRect);
+            }
+            using (Pen cp = new Pen(Color.FromArgb(45, 255, 255, 255), 1f))
+            {
+                g.DrawLine(cp, capRect.Left, capRect.Top, capRect.Right, capRect.Top);
+            }
+
+            using (Font fCapTitle = new Font("Segoe UI", 10.2f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (Font fCapSub = new Font("Segoe UI", 9.5f * s, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (SolidBrush sbCol = new SolidBrush(Color.FromArgb(175, 184, 198)))
+            {
+                StringFormat lf = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
+                g.DrawString(captionTitle, fCapTitle, Brushes.White,
+                    new RectangleF(capRect.Left + 12 * s, capRect.Top + 3 * s, capRect.Width - 24 * s, 20 * s), lf);
+                g.DrawString(captionSub, fCapSub, sbCol,
+                    new RectangleF(capRect.Left + 12 * s, capRect.Top + 22 * s, capRect.Width - 24 * s, 20 * s), lf);
+            }
+        }
+
+        private void DrawStandingsPreview(Graphics g, Rectangle vp, float s)
+        {
+            DrawSimulatedViewportFrame(
+                g, vp,
+                "STANDINGS OVERLAY SCREENSHOT PREVIEW",
+                "Player-centered live standings with country flags, License/SR badge, iRating +/- delta, and lap colors.",
+                s
+            );
+
+            int w = Math.Min(vp.Width - (int)Math.Round(24 * s), (int)Math.Round(485 * s));
+            int rowH = (int)Math.Round(24 * s);
+            int hdrH = (int)Math.Round(28 * s);
+            int colH = (int)Math.Round(20 * s);
+            int rows = 6;
+            int h = hdrH + colH + rows * rowH + (int)Math.Round(8 * s);
+
+            int x = vp.Left + (vp.Width - w) / 2;
+            int y = vp.Top + (vp.Height - (int)Math.Round(46 * s) - h) / 2;
+
+            Rectangle box = new Rectangle(x, y, w, h);
+            using (SolidBrush bg = new SolidBrush(Color.FromArgb(242, 11, 14, 21))) g.FillRectangle(bg, box);
+            using (Pen bp = new Pen(Color.FromArgb(95, 255, 255, 255), 1f)) g.DrawRectangle(bp, box);
+
+            // Top header bar
+            using (SolidBrush hb = new SolidBrush(Color.FromArgb(18, 24, 36)))
+            {
+                g.FillRectangle(hb, x, y, w, hdrH);
+            }
+            using (SolidBrush accent = new SolidBrush(Color.FromArgb(239, 68, 68)))
+            {
+                g.FillRectangle(accent, x, y, (int)Math.Round(4 * s), hdrH);
+            }
+
+            using (Font fHdr = new Font("Segoe UI", 9.8f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (Font fCol = new Font("Segoe UI", 8.2f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (Font fRow = new Font("Segoe UI", 9.2f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (Font fMono = new Font("Consolas", 9.2f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            {
+                StringFormat lf = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
+                StringFormat rf = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center };
+                StringFormat cf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+
+                g.DrawString("RACE  •  Spa-Francorchamps", fHdr, Brushes.White, new RectangleF(x + 12 * s, y, w * 0.55f, hdrH), lf);
+                using (SolidBrush cb = new SolidBrush(Color.FromArgb(56, 189, 248)))
+                {
+                    g.DrawString("SOF 3,451   LAP 8/20", fMono, cb, new RectangleF(x + w * 0.45f, y, w * 0.55f - 10 * s, hdrH), rf);
+                }
+
+                // Column header row
+                int cy = y + hdrH;
+                using (SolidBrush chb = new SolidBrush(Color.FromArgb(14, 18, 28)))
+                {
+                    g.FillRectangle(chb, x, cy, w, colH);
+                }
+
+                int pxPos = x + (int)Math.Round(6 * s);
+                int pxNum = pxPos + (int)Math.Round(20 * s);
+                int pxFlg = _settings.ShowCarNumber ? (pxNum + (int)Math.Round(26 * s)) : pxNum;
+                int pxDrv = pxFlg + (int)Math.Round(22 * s);
+                int pxSr = x + w - (int)Math.Round(204 * s);
+                int pxIr = x + w - (int)Math.Round(158 * s);
+                int pxGap = x + w - (int)Math.Round(98 * s);
+                int pxLap = x + w - (int)Math.Round(54 * s);
+
+                using (SolidBrush mut = new SolidBrush(Color.FromArgb(148, 163, 184)))
+                {
+                    g.DrawString("P", fCol, mut, new RectangleF(pxPos, cy, 18 * s, colH), cf);
+                    if (_settings.ShowCarNumber)
+                        g.DrawString("#", fCol, mut, new RectangleF(pxNum, cy, 24 * s, colH), cf);
+                    g.DrawString("FLG", fCol, mut, new RectangleF(pxFlg, cy, 20 * s, colH), cf);
+                    g.DrawString("DRIVER", fCol, mut, new RectangleF(pxDrv, cy, 110 * s, colH), lf);
+                    g.DrawString("SR", fCol, mut, new RectangleF(pxSr, cy, 42 * s, colH), cf);
+                    g.DrawString("iRATING", fCol, mut, new RectangleF(pxIr, cy, 58 * s, colH), cf);
+                    g.DrawString(_settings.ShowInterval ? "INT" : "GAP", fCol, mut, new RectangleF(pxGap, cy, 42 * s, colH), rf);
+                    g.DrawString("LAST LAP", fCol, mut, new RectangleF(pxLap, cy, 48 * s, colH), rf);
+                }
+
+                string[] pos = { "1", "2", "3", "4", "5", "6" };
+                string[] nums = { "1", "4", "16", "23", "81", "63" };
+                string[] flags = { "NL", "GB", "IT", "US", "AU", "DE" };
+                string[] names = { "M. Verstappen", "L. Norris", "C. Leclerc", "You", "O. Piastri", "G. Russell" };
+                string[] srs = { "A 4.99", "A 4.42", "A 3.85", "A 4.18", "B 3.64", "A 3.12" };
+                string[] irs = _settings.CompactIR
+                    ? new string[] { "7.2k", "5.8k", "5.1k", "4.1k", "3.9k", "3.7k" }
+                    : new string[] { "7,240", "5,810", "5,120", "4,125", "3,940", "3,710" };
+                string[] dIrs = { "+34", "+22", "+11", "+18", "-9", "-18" };
+                string[] gaps = _settings.ShowInterval
+                    ? new string[] { "LEADER", "+1.4s", "+0.8s", "+0.5s", "+0.9s", "+1.2s" }
+                    : new string[] { "LEADER", "+1.4s", "+2.2s", "+2.7s", "+3.6s", "+4.8s" };
+                string[] laps = { "2:16.482", "2:16.710", "2:16.895", "2:16.604", "2:17.112", "2:17.290" };
+
+                int ry = cy + colH;
+                for (int i = 0; i < rows; i++)
+                {
+                    bool isYou = (i == 3);
+                    Rectangle rr = new Rectangle(x + 1, ry, w - 2, rowH);
+                    Color rBg = isYou
+                        ? Color.FromArgb(48, 56, 189, 248)
+                        : (i % 2 == 0 ? Color.FromArgb(16, 21, 32) : Color.FromArgb(12, 16, 25));
+                    using (SolidBrush rb = new SolidBrush(rBg)) g.FillRectangle(rb, rr);
+
+                    if (isYou)
+                    {
+                        using (SolidBrush bar = new SolidBrush(Color.FromArgb(56, 189, 248)))
+                            g.FillRectangle(bar, x + 1, ry, (int)Math.Round(3 * s), rowH);
+                    }
+
+                    // Position badge
+                    int pBadgeH = (int)Math.Round(16 * s);
+                    Rectangle pRect = new Rectangle(pxPos + 1, ry + (rowH - pBadgeH) / 2, (int)(18 * s), pBadgeH);
+                    Color pBg = i == 0 ? Color.FromArgb(250, 204, 21) : (i == 1 ? Color.FromArgb(209, 213, 219) : (i == 2 ? Color.FromArgb(217, 119, 6) : Color.FromArgb(35, 42, 56)));
+                    Color pFg = i <= 1 ? Color.FromArgb(17, 24, 39) : Color.White;
+                    using (SolidBrush pb = new SolidBrush(pBg)) g.FillRectangle(pb, pRect);
+                    using (SolidBrush pf = new SolidBrush(pFg)) g.DrawString(pos[i], fCol, pf, pRect, cf);
+
+                    if (_settings.ShowCarNumber)
+                    {
+                        using (SolidBrush nb = new SolidBrush(Color.FromArgb(251, 191, 36)))
+                            g.DrawString("#" + nums[i], fMono, nb, new RectangleF(pxNum, ry, 24 * s, rowH), cf);
+                    }
+
+                    // Country flag
+                    int fw = Math.Max(13, (int)Math.Round(16 * s));
+                    int fh = Math.Max(9, (int)Math.Round(11 * s));
+                    OverlayForm.DrawCountryFlag(g, pxFlg + ((int)(20 * s) - fw) / 2, ry + (rowH - fh) / 2, fw, fh, flags[i], s);
+
+                    g.DrawString(names[i], fRow, isYou ? Brushes.Cyan : Brushes.White, new RectangleF(pxDrv, ry, pxSr - pxDrv - 4 * s, rowH), lf);
+                    if (isYou)
+                    {
+                        Rectangle youBadge = new Rectangle(pxSr - (int)(30 * s), ry + (rowH - pBadgeH) / 2, (int)(26 * s), pBadgeH);
+                        using (SolidBrush yb = new SolidBrush(Color.FromArgb(55, 56, 189, 248))) g.FillRectangle(yb, youBadge);
+                        using (SolidBrush yf = new SolidBrush(Color.FromArgb(56, 189, 248))) g.DrawString("YOU", fCol, yf, youBadge, cf);
+                    }
+
+                    // License pill
+                    Rectangle srRect = new Rectangle(pxSr + (int)(2 * s), ry + (int)(4 * s), (int)(39 * s), rowH - (int)(8 * s));
+                    Color srCol = i == 4 ? Color.FromArgb(34, 197, 94) : Color.FromArgb(59, 130, 246);
+                    using (SolidBrush sb = new SolidBrush(Color.FromArgb(50, srCol.R, srCol.G, srCol.B))) g.FillRectangle(sb, srRect);
+                    using (Pen sp = new Pen(srCol, 1f)) g.DrawRectangle(sp, srRect);
+                    g.DrawString(srs[i], fCol, Brushes.White, srRect, cf);
+
+                    string irText = _settings.ShowDeltaIR ? (irs[i] + " " + dIrs[i]) : irs[i];
+                    g.DrawString(irText, fMono, Brushes.Gainsboro, new RectangleF(pxIr - 4 * s, ry, 64 * s, rowH), cf);
+                    g.DrawString(gaps[i], fMono, Brushes.LightGray, new RectangleF(pxGap, ry, 42 * s, rowH), rf);
+
+                    Color lapCol = i == 0 ? Color.FromArgb(192, 132, 252) : (isYou ? Color.FromArgb(74, 222, 128) : Color.White);
+                    using (SolidBrush lb = new SolidBrush(lapCol))
+                        g.DrawString(laps[i], fMono, lb, new RectangleF(pxLap, ry, 48 * s, rowH), rf);
+
+                    ry += rowH;
+                }
+            }
+        }
+
+        private void DrawDeltaBarPreview(Graphics g, Rectangle vp, float s)
+        {
+            DrawSimulatedViewportFrame(
+                g, vp,
+                "DELTA BAR (OPTION C) SCREENSHOT PREVIEW",
+                "Center-zero delta bar colored by live speed trend, reference lap selector, predicted lap, and official sectors.",
+                s
+            );
+
+            int w = Math.Min(vp.Width - (int)Math.Round(28 * s), (int)Math.Round(436 * s));
+            int h = _settings.ShowSectorSplits ? (int)Math.Round(108 * s) : (int)Math.Round(80 * s);
+            int x = vp.Left + (vp.Width - w) / 2;
+            int y = vp.Top + (vp.Height - (int)Math.Round(46 * s) - h) / 2;
+
+            Rectangle box = new Rectangle(x, y, w, h);
+            using (SolidBrush bg = new SolidBrush(Color.FromArgb(242, 11, 14, 21))) g.FillRectangle(bg, box);
+            using (Pen bp = new Pen(Color.FromArgb(100, 255, 255, 255), 1f)) g.DrawRectangle(bp, box);
+
+            using (Font fTiny = new Font("Segoe UI", 8.5f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (Font fRef = new Font("Consolas", 11.2f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (Font fBig = new Font("Consolas", 18.0f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            {
+                StringFormat lf = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
+                StringFormat rf = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center };
+                StringFormat cf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+
+                int pad = (int)Math.Round(12 * s);
+                int topY = y + (int)Math.Round(8 * s);
+                int topH = (int)Math.Round(38 * s);
+
+                string modeLabel = "SESSION BEST";
+                if (_settings.DeltaRefMode == DeltaReferenceMode.SessionOptimal) modeLabel = "OPTIMAL LAP";
+                else if (_settings.DeltaRefMode == DeltaReferenceMode.PersonalBest) modeLabel = "PERSONAL BEST";
+                else if (_settings.DeltaRefMode == DeltaReferenceMode.LastLap) modeLabel = "LAST LAP";
+
+                using (SolidBrush cyan = new SolidBrush(Color.FromArgb(56, 189, 248)))
+                    g.DrawString(modeLabel, fTiny, cyan, new RectangleF(x + pad, topY, 130 * s, 15 * s), lf);
+                g.DrawString("2:16.482", fRef, Brushes.White, new RectangleF(x + pad, topY + 15 * s, 130 * s, 20 * s), lf);
+
+                // Center Big Delta Pill
+                int pillW = (int)Math.Round(118 * s);
+                Rectangle pill = new Rectangle(x + (w - pillW) / 2, topY, pillW, topH);
+                using (SolidBrush pb = new SolidBrush(Color.FromArgb(40, 34, 197, 94))) g.FillRectangle(pb, pill);
+                using (Pen pp = new Pen(Color.FromArgb(210, 74, 222, 128), 1.5f * s)) g.DrawRectangle(pp, pill);
+                using (SolidBrush gb = new SolidBrush(Color.FromArgb(74, 222, 128)))
+                    g.DrawString("-0.28s", fBig, gb, pill, cf);
+
+                // Right Predicted Lap
+                using (SolidBrush mut = new SolidBrush(Color.FromArgb(156, 163, 175)))
+                    g.DrawString("PREDICTED LAP", fTiny, mut, new RectangleF(x + w - pad - 130 * s, topY, 130 * s, 15 * s), rf);
+                g.DrawString("2:16.202", fRef, Brushes.White, new RectangleF(x + w - pad - 130 * s, topY + 15 * s, 130 * s, 20 * s), rf);
+
+                // Progress bar
+                int barY = topY + topH + (int)Math.Round(8 * s);
+                int barH = (int)Math.Round(14 * s);
+                Rectangle track = new Rectangle(x + pad, barY, w - pad * 2, barH);
+                using (SolidBrush tb = new SolidBrush(Color.FromArgb(24, 30, 44))) g.FillRectangle(tb, track);
+                using (Pen tp = new Pen(Color.FromArgb(60, 255, 255, 255), 1f)) g.DrawRectangle(tp, track);
+
+                int midX = track.Left + track.Width / 2;
+                int fillW = (int)(track.Width * 0.24f);
+                Rectangle fill = new Rectangle(midX - fillW, barY + 1, fillW, barH - 2);
+                using (SolidBrush fb = new SolidBrush(Color.FromArgb(210, 34, 197, 94))) g.FillRectangle(fb, fill);
+                using (Pen mp = new Pen(Color.White, 2f)) g.DrawLine(mp, midX, barY - 2, midX, barY + barH + 2);
+
+                if (_settings.ShowSectorSplits)
+                {
+                    int secY = barY + barH + (int)Math.Round(7 * s);
+                    int secH = (int)Math.Round(22 * s);
+                    int gap = (int)Math.Round(6 * s);
+                    int secW = (track.Width - gap * 2) / 3;
+                    string[] sLabels = { "S1  -0.14s", "S2  -0.14s", "S3  +0.00s" };
+                    for (int i = 0; i < 3; i++)
+                    {
+                        Rectangle sr = new Rectangle(track.Left + i * (secW + gap), secY, secW, secH);
+                        bool done = i < 2;
+                        Color sCol = done ? Color.FromArgb(34, 197, 94) : Color.FromArgb(56, 189, 248);
+                        using (SolidBrush sb = new SolidBrush(Color.FromArgb(35, sCol.R, sCol.G, sCol.B))) g.FillRectangle(sb, sr);
+                        using (Pen sp = new Pen(Color.FromArgb(140, sCol.R, sCol.G, sCol.B), 1f)) g.DrawRectangle(sp, sr);
+                        g.DrawString(sLabels[i], fTiny, Brushes.White, sr, cf);
+                    }
+                }
+            }
+        }
+
+        private void DrawGarage61Preview(Graphics g, Rectangle vp, float s)
+        {
+            string styleTitle = "GARAGE61 COACH — OPTION A (LOOKAHEAD TRACE + PEDALS) PREVIEW";
+            string styleSub = "Scrolling spatial brake/throttle trace (-60m to +" + _settings.Garage61LookaheadMeters + "m) + live vs ghost pedal pressure matcher.";
+            if (_settings.Garage61Style == Garage61LayoutStyle.OptionB_CompactBrakeCoach)
+            {
+                styleTitle = "GARAGE61 COACH — OPTION B (COMPACT SIGHTLINE BAR) PREVIEW";
+                styleSub = "Minimalist horizontal brake countdown, live vs target peak brake pressure bar, and braking spot delta.";
+            }
+            else if (_settings.Garage61Style == Garage61LayoutStyle.OptionC_ProBoxWithCornerAudit)
+            {
+                styleTitle = "GARAGE61 COACH — OPTION C (PRO BOX + 3-CORNER AUDIT) PREVIEW";
+                styleSub = "Full lookahead trace, pedal matcher, speed/gear delta box, and 3-corner braking accuracy scorecard.";
+            }
+
+            DrawSimulatedViewportFrame(g, vp, styleTitle, styleSub, s);
+
+            using (Font fHdr = new Font("Segoe UI", 9.2f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (Font fTiny = new Font("Segoe UI", 8.2f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (Font fMono = new Font("Consolas", 10.5f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (Font fBig = new Font("Consolas", 14.5f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            {
+                StringFormat lf = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
+                StringFormat rf = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center };
+                StringFormat cf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+
+                if (_settings.Garage61Style == Garage61LayoutStyle.OptionB_CompactBrakeCoach)
+                {
+                    int w = Math.Min(vp.Width - (int)Math.Round(28 * s), (int)Math.Round(436 * s));
+                    int h = (int)Math.Round(66 * s);
+                    int x = vp.Left + (vp.Width - w) / 2;
+                    int y = vp.Top + (vp.Height - (int)Math.Round(46 * s) - h) / 2;
+
+                    Rectangle box = new Rectangle(x, y, w, h);
+                    using (SolidBrush bg = new SolidBrush(Color.FromArgb(242, 11, 14, 21))) g.FillRectangle(bg, box);
+                    using (Pen bp = new Pen(Color.FromArgb(110, 244, 63, 94), 1.2f * s)) g.DrawRectangle(bp, box);
+
+                    int pad = (int)Math.Round(8 * s);
+                    Rectangle leftBox = new Rectangle(x + pad, y + pad, (int)(110 * s), h - pad * 2);
+                    using (SolidBrush lb = new SolidBrush(Color.FromArgb(40, 245, 158, 11))) g.FillRectangle(lb, leftBox);
+                    using (Pen lp = new Pen(Color.FromArgb(245, 158, 11), 1f)) g.DrawRectangle(lp, leftBox);
+                    g.DrawString("T5 Les Combes", fTiny, Brushes.LightGray, new RectangleF(leftBox.Left + 5 * s, leftBox.Top + 3 * s, leftBox.Width - 10 * s, 16 * s), lf);
+                    using (SolidBrush yb = new SolidBrush(Color.FromArgb(253, 224, 71)))
+                        g.DrawString("BRK IN 28 m", fMono, yb, new RectangleF(leftBox.Left + 5 * s, leftBox.Top + 20 * s, leftBox.Width - 10 * s, 24 * s), lf);
+
+                    Rectangle rightBox = new Rectangle(x + w - pad - (int)(108 * s), y + pad, (int)(108 * s), h - pad * 2);
+                    using (SolidBrush rb = new SolidBrush(Color.FromArgb(40, 34, 197, 94))) g.FillRectangle(rb, rightBox);
+                    using (Pen rp = new Pen(Color.FromArgb(34, 197, 94), 1f)) g.DrawRectangle(rp, rightBox);
+                    g.DrawString("BRAKE SPOT", fTiny, Brushes.LightGray, new RectangleF(rightBox.Left, rightBox.Top + 3 * s, rightBox.Width, 16 * s), cf);
+                    using (SolidBrush gb = new SolidBrush(Color.FromArgb(74, 222, 128)))
+                        g.DrawString("0.8m ON TARGET", fTiny, gb, new RectangleF(rightBox.Left, rightBox.Top + 22 * s, rightBox.Width, 22 * s), cf);
+
+                    Rectangle midBox = new Rectangle(leftBox.Right + pad, y + pad, rightBox.Left - leftBox.Right - pad * 2, h - pad * 2);
+                    g.DrawString("BRAKE   YOU 84% / G61 88%", fTiny, Brushes.White,
+                        new RectangleF(midBox.Left, midBox.Top + 2 * s, midBox.Width, 16 * s), lf);
+                    Rectangle barTrack = new Rectangle(midBox.Left, midBox.Top + (int)(22 * s), midBox.Width, (int)(20 * s));
+                    using (SolidBrush tb = new SolidBrush(Color.FromArgb(24, 30, 44))) g.FillRectangle(tb, barTrack);
+                    using (SolidBrush fb = new SolidBrush(Color.FromArgb(220, 239, 68, 68)))
+                        g.FillRectangle(fb, barTrack.Left + 1, barTrack.Top + 1, (int)(barTrack.Width * 0.84f), barTrack.Height - 2);
+                    int pkX = barTrack.Left + (int)(barTrack.Width * 0.92f);
+                    using (Pen pkPen = new Pen(Color.FromArgb(250, 204, 21), 2f * s))
+                        g.DrawLine(pkPen, pkX, barTrack.Top - 2, pkX, barTrack.Bottom + 2);
+                    return;
+                }
+
+                // Option A or Option C preview box
+                bool showAudit = (_settings.Garage61Style == Garage61LayoutStyle.OptionC_ProBoxWithCornerAudit);
+                int boxW = Math.Min(vp.Width - (int)Math.Round(28 * s), (int)Math.Round(436 * s));
+                int boxH = showAudit ? (int)Math.Round(232 * s) : (int)Math.Round(182 * s);
+                int bx = vp.Left + (vp.Width - boxW) / 2;
+                int by = vp.Top + (vp.Height - (int)Math.Round(46 * s) - boxH) / 2;
+
+                Rectangle mainBox = new Rectangle(bx, by, boxW, boxH);
+                using (SolidBrush bg = new SolidBrush(Color.FromArgb(242, 11, 14, 21))) g.FillRectangle(bg, mainBox);
+                using (Pen bp = new Pen(Color.FromArgb(95, 56, 189, 248), 1f)) g.DrawRectangle(bp, mainBox);
+
+                // Top banner
+                int banH = (int)Math.Round(30 * s);
+                Rectangle ban = new Rectangle(bx + (int)(8 * s), by + (int)(8 * s), boxW - (int)(16 * s), banH);
+                using (SolidBrush bb = new SolidBrush(Color.FromArgb(35, 245, 158, 11))) g.FillRectangle(bb, ban);
+                using (Pen bPen = new Pen(Color.FromArgb(160, 245, 158, 11), 1f)) g.DrawRectangle(bPen, ban);
+                using (SolidBrush yb = new SolidBrush(Color.FromArgb(253, 224, 71)))
+                    g.DrawString("T5 Les Combes • BRK IN 32m (G61 92%)", fHdr, yb, new RectangleF(ban.Left + 8 * s, ban.Top, ban.Width * 0.65f, ban.Height), lf);
+                using (SolidBrush gb = new SolidBrush(Color.FromArgb(74, 222, 128)))
+                    g.DrawString("0.9m ON TARGET", fTiny, gb, new RectangleF(ban.Left + ban.Width * 0.62f, ban.Top, ban.Width * 0.38f - 8 * s, ban.Height), rf);
+
+                // Trace graph area + right pedal bars
+                int graphTop = ban.Bottom + (int)Math.Round(8 * s);
+                int graphH = (int)Math.Round(128 * s);
+                int pedalsW = (int)Math.Round(96 * s);
+                Rectangle graphRect = new Rectangle(ban.Left, graphTop, ban.Width - pedalsW - (int)(8 * s), graphH);
+                Rectangle pedalsRect = new Rectangle(graphRect.Right + (int)(8 * s), graphTop, pedalsW, graphH);
+
+                using (SolidBrush gb = new SolidBrush(Color.FromArgb(16, 22, 34))) g.FillRectangle(gb, graphRect);
+                using (Pen gp = new Pen(Color.FromArgb(50, 255, 255, 255), 1f)) g.DrawRectangle(gp, graphRect);
+
+                // NOW vertical crosshair at 33%
+                int nowX = graphRect.Left + (int)(graphRect.Width * 0.33f);
+                using (Pen nowPen = new Pen(Color.FromArgb(180, 56, 189, 248), 1.5f * s))
+                    g.DrawLine(nowPen, nowX, graphRect.Top + 2, nowX, graphRect.Bottom - 2);
+                g.DrawString("NOW", fTiny, Brushes.Cyan, new RectangleF(nowX + 3 * s, graphRect.Top + 2 * s, 40 * s, 14 * s), lf);
+
+                // Simulated Ghost & Live Brake/Throttle curves
+                PointF[] ghostBrk = new PointF[]
+                {
+                    new PointF(graphRect.Left + graphRect.Width * 0.05f, graphRect.Bottom - 8 * s),
+                    new PointF(graphRect.Left + graphRect.Width * 0.44f, graphRect.Bottom - 8 * s),
+                    new PointF(graphRect.Left + graphRect.Width * 0.50f, graphRect.Top + 14 * s),
+                    new PointF(graphRect.Left + graphRect.Width * 0.66f, graphRect.Top + 24 * s),
+                    new PointF(graphRect.Left + graphRect.Width * 0.88f, graphRect.Bottom - 8 * s)
+                };
+                PointF[] ghostThr = new PointF[]
+                {
+                    new PointF(graphRect.Left + graphRect.Width * 0.05f, graphRect.Top + 12 * s),
+                    new PointF(graphRect.Left + graphRect.Width * 0.42f, graphRect.Top + 12 * s),
+                    new PointF(graphRect.Left + graphRect.Width * 0.48f, graphRect.Bottom - 8 * s),
+                    new PointF(graphRect.Left + graphRect.Width * 0.72f, graphRect.Bottom - 8 * s),
+                    new PointF(graphRect.Left + graphRect.Width * 0.92f, graphRect.Top + 18 * s)
+                };
+
+                using (Pen gThrPen = new Pen(Color.FromArgb(140, 34, 197, 94), 1.8f * s) { DashStyle = DashStyle.Dash })
+                using (Pen gBrkPen = new Pen(Color.FromArgb(210, 244, 63, 94), 2.2f * s) { DashStyle = DashStyle.Dash })
+                {
+                    g.DrawLines(gThrPen, ghostThr);
+                    g.DrawLines(gBrkPen, ghostBrk);
+                }
+
+                int brkSpotX = graphRect.Left + (int)(graphRect.Width * 0.44f);
+                using (Pen flagPen = new Pen(Color.FromArgb(244, 63, 94), 1.5f * s))
+                    g.DrawLine(flagPen, brkSpotX, graphRect.Top + 4, brkSpotX, graphRect.Bottom - 4);
+                using (SolidBrush rb = new SolidBrush(Color.FromArgb(244, 63, 94)))
+                    g.DrawString("G61 BRK", fTiny, rb, new RectangleF(brkSpotX + 3 * s, graphRect.Top + 2 * s, 60 * s, 14 * s), lf);
+
+                // Vertical Brake & Throttle bars inside pedalsRect
+                int bBarW = (pedalsRect.Width - (int)(12 * s)) / 2;
+                Rectangle brkBar = new Rectangle(pedalsRect.Left, pedalsRect.Top + (int)(16 * s), bBarW, pedalsRect.Height - (int)(32 * s));
+                Rectangle thrBar = new Rectangle(brkBar.Right + (int)(12 * s), brkBar.Top, bBarW, brkBar.Height);
+
+                g.DrawString("BRK", fTiny, Brushes.White, new RectangleF(brkBar.Left, pedalsRect.Top, brkBar.Width, 14 * s), cf);
+                g.DrawString("THR", fTiny, Brushes.White, new RectangleF(thrBar.Left, pedalsRect.Top, thrBar.Width, 14 * s), cf);
+
+                using (SolidBrush tb = new SolidBrush(Color.FromArgb(22, 28, 42)))
+                {
+                    g.FillRectangle(tb, brkBar);
+                    g.FillRectangle(tb, thrBar);
+                }
+                int brkFillH = (int)(brkBar.Height * 0.84f);
+                using (SolidBrush bf = new SolidBrush(Color.FromArgb(220, 239, 68, 68)))
+                    g.FillRectangle(bf, brkBar.Left + 2, brkBar.Bottom - brkFillH, brkBar.Width - 4, brkFillH);
+
+                int pkY = brkBar.Bottom - (int)(brkBar.Height * 0.92f);
+                using (Pen pkPen = new Pen(Color.FromArgb(250, 204, 21), 2f * s))
+                    g.DrawLine(pkPen, brkBar.Left - 2, pkY, brkBar.Right + 2, pkY);
+
+                int thrFillH = (int)(thrBar.Height * 0.18f);
+                using (SolidBrush tf = new SolidBrush(Color.FromArgb(210, 34, 197, 94)))
+                    g.FillRectangle(tf, thrBar.Left + 2, thrBar.Bottom - thrFillH, thrBar.Width - 4, thrFillH);
+
+                g.DrawString("84%", fTiny, Brushes.White, new RectangleF(brkBar.Left - 4 * s, brkBar.Bottom + 2 * s, brkBar.Width + 8 * s, 14 * s), cf);
+                g.DrawString("18%", fTiny, Brushes.White, new RectangleF(thrBar.Left - 4 * s, thrBar.Bottom + 2 * s, thrBar.Width + 8 * s, 14 * s), cf);
+
+                if (showAudit)
+                {
+                    int audY = graphRect.Bottom + (int)Math.Round(8 * s);
+                    int audH = (int)Math.Round(42 * s);
+                    int gap = (int)Math.Round(6 * s);
+                    int cardW = (ban.Width - gap * 2) / 3;
+                    string[] cNames = { "T1 La Source", "T5 Les Combes", "T8 Bruxelles" };
+                    string[] cSpots = { "0.8m TARGET", "2.1m LATE", "3.4m EARLY" };
+                    string[] cSubs = { "PK 93/94% • 69kph", "PK 88/92% • 134kph", "PK 79/86% • 108kph" };
+                    Color[] cCols = { Color.FromArgb(34, 197, 94), Color.FromArgb(244, 63, 94), Color.FromArgb(245, 158, 11) };
+
+                    for (int i = 0; i < 3; i++)
+                    {
+                        Rectangle cr = new Rectangle(ban.Left + i * (cardW + gap), audY, cardW, audH);
+                        using (SolidBrush cb = new SolidBrush(Color.FromArgb(28, cCols[i].R, cCols[i].G, cCols[i].B))) g.FillRectangle(cb, cr);
+                        using (Pen cp = new Pen(Color.FromArgb(140, cCols[i].R, cCols[i].G, cCols[i].B), 1f)) g.DrawRectangle(cp, cr);
+                        g.DrawString(cNames[i], fTiny, Brushes.White, new RectangleF(cr.Left + 4 * s, cr.Top + 3 * s, cr.Width * 0.56f, 16 * s), lf);
+                        using (SolidBrush sb = new SolidBrush(cCols[i]))
+                            g.DrawString(cSpots[i], fTiny, sb, new RectangleF(cr.Left + cr.Width * 0.44f, cr.Top + 3 * s, cr.Width * 0.56f - 4 * s, 16 * s), rf);
+                        g.DrawString(cSubs[i], fTiny, Brushes.LightGray, new RectangleF(cr.Left + 4 * s, cr.Top + 21 * s, cr.Width - 8 * s, 16 * s), lf);
+                    }
+                }
+            }
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
@@ -5379,13 +6265,16 @@ namespace FreeOverlay
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
             float s = _dpiScale;
-            int headerH = (int)Math.Round(56 * s);
+            int headerH = (int)Math.Round(54 * s);
+            int tabBarH = (int)Math.Round(46 * s);
             int footerH = (int)Math.Round(36 * s);
             int pad = (int)Math.Round(16 * s);
 
             using (Font fTitle = new Font("Segoe UI", 16.0f * s, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (Font fCardTitle = new Font("Segoe UI", 12.8f * s, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (Font fLabel = new Font("Segoe UI", 11.2f * s, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (Font fTab = new Font("Segoe UI", 11.8f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (Font fBadge = new Font("Segoe UI", 8.8f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (Font fCardTitle = new Font("Segoe UI", 13.0f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (Font fLabel = new Font("Segoe UI", 11.4f * s, FontStyle.Regular, GraphicsUnit.Pixel))
             using (Font fBtn = new Font("Segoe UI", 10.6f * s, FontStyle.Bold, GraphicsUnit.Pixel))
             using (Font fMono = new Font("Consolas", 11.5f * s, FontStyle.Bold, GraphicsUnit.Pixel))
             {
@@ -5393,7 +6282,7 @@ namespace FreeOverlay
                 StringFormat rightFmt = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center };
                 StringFormat centerFmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
 
-                // Header bar
+                // 1. Top Header Bar
                 using (SolidBrush hb = new SolidBrush(Color.FromArgb(16, 20, 30)))
                 {
                     g.FillRectangle(hb, 0, 0, Width, headerH);
@@ -5407,7 +6296,6 @@ namespace FreeOverlay
                 g.DrawString("FREE OVERLAY HUB", fTitle, Brushes.White,
                     new RectangleF(pad + dotSz + 10 * s, 0, 260 * s, headerH), leftFmt);
 
-                // Header Right Controls
                 int hBtnH = (int)Math.Round(30 * s);
                 int hBtnY = (headerH - hBtnH) / 2;
                 int rightX = Width - pad;
@@ -5429,255 +6317,352 @@ namespace FreeOverlay
                 int lockW = (int)Math.Round(126 * s);
                 _btnLockAll = DrawButton(g, fBtn, lockStr, rightX - lockW, hBtnY, lockW, hBtnH, _settings.Locked, Color.FromArgb(245, 158, 11), s);
 
-                // Three Side-by-Side Overlay Configuration Cards
-                int cardsTop = headerH + pad;
-                int cardsH = Height - cardsTop - footerH - pad;
-                int cardW = (Width - pad * 4) / 3;
+                // 2. Three-Column Layout: Left Sidebar (Widgets Tabs) | Center (Settings) | Right (Widget Preview)
+                int contentTop = headerH + (int)Math.Round(12 * s);
+                int contentH = Height - contentTop - footerH - (int)Math.Round(12 * s);
+                int sidebarW = (int)Math.Round(226 * s);
+                int settingsW = (int)Math.Round(394 * s);
+                int previewW = Width - pad * 4 - sidebarW - settingsW;
 
-                Rectangle card1 = new Rectangle(pad, cardsTop, cardW, cardsH);
-                Rectangle card2 = new Rectangle(pad * 2 + cardW, cardsTop, cardW, cardsH);
-                Rectangle card3 = new Rectangle(pad * 3 + cardW * 2, cardsTop, Width - pad * 4 - cardW * 2, cardsH);
+                Rectangle sidebarPanel = new Rectangle(pad, contentTop, sidebarW, contentH);
+                Rectangle settingsPanel = new Rectangle(sidebarPanel.Right + pad, contentTop, settingsW, contentH);
+                Rectangle previewPanel = new Rectangle(settingsPanel.Right + pad, contentTop, previewW, contentH);
 
+                using (SolidBrush sbBg = new SolidBrush(Color.FromArgb(14, 18, 28)))
+                {
+                    g.FillRectangle(sbBg, sidebarPanel);
+                }
                 using (SolidBrush cb = new SolidBrush(Color.FromArgb(17, 22, 33)))
                 {
-                    g.FillRectangle(cb, card1);
-                    g.FillRectangle(cb, card2);
-                    g.FillRectangle(cb, card3);
+                    g.FillRectangle(cb, settingsPanel);
+                    g.FillRectangle(cb, previewPanel);
                 }
                 using (Pen cp = new Pen(Color.FromArgb(45, 255, 255, 255), 1.0f))
                 {
-                    g.DrawRectangle(cp, card1);
-                    g.DrawRectangle(cp, card2);
-                    g.DrawRectangle(cp, card3);
+                    g.DrawRectangle(cp, sidebarPanel);
+                    g.DrawRectangle(cp, settingsPanel);
+                    g.DrawRectangle(cp, previewPanel);
                 }
 
+                // Left Sidebar: Widgets Navigation Rail
+                int sbPad = (int)Math.Round(12 * s);
+                int sbInnerW = sidebarPanel.Width - sbPad * 2;
+                int sbCurY = sidebarPanel.Top + (int)Math.Round(12 * s);
+                using (SolidBrush mutHdr = new SolidBrush(Color.FromArgb(148, 163, 184)))
+                {
+                    g.DrawString("WIDGETS", fBadge, mutHdr, new RectangleF(sidebarPanel.Left + sbPad, sbCurY, sbInnerW, 18 * s), leftFmt);
+                }
+                sbCurY += (int)Math.Round(22 * s);
+
+                int vTabH = (int)Math.Round(56 * s);
+                int vTabGap = (int)Math.Round(8 * s);
+
+                _tabStandings = DrawTabButton(
+                    g, fTab, fBadge, "1. STANDINGS",
+                    _settings.StandingsEnabled, _settings.StandingsAutoOpen,
+                    sidebarPanel.Left + sbPad, sbCurY, sbInnerW, vTabH, _activeTab == 0, s
+                );
+                sbCurY += vTabH + vTabGap;
+
+                _tabDeltaBar = DrawTabButton(
+                    g, fTab, fBadge, "2. DELTA BAR",
+                    _settings.DeltaBarEnabled, _settings.DeltaBarAutoOpen,
+                    sidebarPanel.Left + sbPad, sbCurY, sbInnerW, vTabH, _activeTab == 1, s
+                );
+                sbCurY += vTabH + vTabGap;
+
+                _tabGarage61 = DrawTabButton(
+                    g, fTab, fBadge, "3. GARAGE61 COACH",
+                    _settings.Garage61Enabled, _settings.Garage61AutoOpen,
+                    sidebarPanel.Left + sbPad, sbCurY, sbInnerW, vTabH, _activeTab == 2, s
+                );
+
+                int sx = settingsPanel.Left + (int)Math.Round(16 * s);
+                int sw = settingsPanel.Width - (int)Math.Round(32 * s);
+                int curY = settingsPanel.Top + (int)Math.Round(14 * s);
                 int rowH = (int)Math.Round(30 * s);
-                int gapY = (int)Math.Round(11 * s);
-                int togW = (int)Math.Round(86 * s);
-                int optW = (int)Math.Round(136 * s);
-                int pmW = (int)Math.Round(32 * s);
+                int gapY = (int)Math.Round(10 * s);
+                int optW = (int)Math.Round(186 * s);
+                int rStart = sx + sw - optW;
+                int pmW = (int)Math.Round(36 * s);
                 int valW = optW - pmW * 2;
-                int resetY = card1.Bottom - rowH - (int)Math.Round(14 * s);
+                int resetY = settingsPanel.Bottom - rowH - (int)Math.Round(14 * s);
 
-                // =====================================================
-                // CARD 1: STANDINGS OVERLAY
-                // =====================================================
-                int c1X = card1.Left + (int)Math.Round(14 * s);
-                int c1W = card1.Width - (int)Math.Round(28 * s);
-                int curY = card1.Top + (int)Math.Round(12 * s);
+                // Right Preview Panel Header + Viewport
+                int px = previewPanel.Left + (int)Math.Round(16 * s);
+                int pw = previewPanel.Width - (int)Math.Round(32 * s);
+                int py = previewPanel.Top + (int)Math.Round(12 * s);
+                g.DrawString("WIDGET PREVIEW", fCardTitle, Brushes.White, new RectangleF(px, py, pw * 0.6f, 24 * s), leftFmt);
+                using (SolidBrush cyanBrush = new SolidBrush(Color.FromArgb(56, 189, 248)))
+                {
+                    g.DrawString("LIVE SCREENSHOT PREVIEW", fBadge, cyanBrush, new RectangleF(px + pw * 0.5f, py, pw * 0.5f, 24 * s), rightFmt);
+                }
+                Rectangle viewportRect = new Rectangle(px, py + (int)Math.Round(28 * s), pw, previewPanel.Height - (int)Math.Round(44 * s));
 
-                g.DrawString("1. STANDINGS", fCardTitle, Brushes.White,
-                    new RectangleF(c1X, curY, c1W * 0.65f, rowH), leftFmt);
+                if (_activeTab == 0)
+                {
+                    // =====================================================
+                    // TAB 1: STANDINGS SETTINGS + PREVIEW
+                    // =====================================================
+                    g.DrawString("STANDINGS OVERLAY SETTINGS", fCardTitle, Brushes.White,
+                        new RectangleF(sx, curY, sw, rowH), leftFmt);
+                    curY += rowH + (int)Math.Round(6 * s);
 
-                _btnStandingsToggle = DrawButton(
-                    g, fBtn,
-                    _settings.StandingsEnabled ? "ENABLED" : "OFF",
-                    c1X + c1W - togW, curY + 2, togW, rowH - 4,
-                    _settings.StandingsEnabled,
-                    _settings.StandingsEnabled ? Color.FromArgb(34, 197, 94) : Color.FromArgb(107, 114, 128),
-                    s
-                );
-                curY += rowH + (int)Math.Round(12 * s);
+                    g.DrawString("Widget Status (Now)", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnStandingsToggle = DrawButton(
+                        g, fBtn,
+                        _settings.StandingsEnabled ? "OPEN (VISIBLE)" : "CLOSED (HIDDEN)",
+                        rStart, curY, optW, rowH,
+                        _settings.StandingsEnabled,
+                        _settings.StandingsEnabled ? Color.FromArgb(34, 197, 94) : Color.FromArgb(107, 114, 128),
+                        s
+                    );
+                    curY += rowH + gapY;
 
-                int r1Start = c1X + c1W - optW;
-                g.DrawString("Car Number (#)", fLabel, Brushes.Gainsboro, new RectangleF(c1X, curY, c1W * 0.50f, rowH), leftFmt);
-                _btnStandingsCarNum = DrawButton(
-                    g, fBtn,
-                    _settings.ShowCarNumber ? "SHOW (#)" : "HIDDEN",
-                    r1Start, curY, optW, rowH,
-                    _settings.ShowCarNumber, Color.FromArgb(34, 197, 94), s
-                );
-                curY += rowH + gapY;
+                    g.DrawString("Open Automatically on Launch", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnStandingsAutoOpen = DrawButton(
+                        g, fBtn,
+                        _settings.StandingsAutoOpen ? "YES (AUTO-OPEN)" : "NO (MANUAL)",
+                        rStart, curY, optW, rowH,
+                        _settings.StandingsAutoOpen,
+                        _settings.StandingsAutoOpen ? Color.FromArgb(56, 189, 248) : Color.FromArgb(107, 114, 128),
+                        s
+                    );
+                    curY += rowH + gapY;
 
-                g.DrawString("Timing Column", fLabel, Brushes.Gainsboro, new RectangleF(c1X, curY, c1W * 0.50f, rowH), leftFmt);
-                _btnStandingsGap = DrawButton(
-                    g, fBtn,
-                    _settings.ShowInterval ? "INTERVAL AHEAD" : "GAP TO LEADER",
-                    r1Start, curY, optW, rowH,
-                    true, Color.FromArgb(56, 189, 248), s
-                );
-                curY += rowH + gapY;
+                    using (Pen divPen = new Pen(Color.FromArgb(35, 255, 255, 255), 1f))
+                        g.DrawLine(divPen, sx, curY - (int)(4 * s), sx + sw, curY - (int)(4 * s));
 
-                g.DrawString("iRating Display", fLabel, Brushes.Gainsboro, new RectangleF(c1X, curY, c1W * 0.50f, rowH), leftFmt);
-                _btnStandingsCompactIr = DrawButton(
-                    g, fBtn,
-                    _settings.CompactIR ? "COMPACT (4.1k)" : "FULL (4,125)",
-                    r1Start, curY, optW, rowH,
-                    _settings.CompactIR, Color.FromArgb(56, 189, 248), s
-                );
-                curY += rowH + gapY;
+                    g.DrawString("Car Number (#)", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnStandingsCarNum = DrawButton(
+                        g, fBtn,
+                        _settings.ShowCarNumber ? "SHOW (#)" : "HIDDEN",
+                        rStart, curY, optW, rowH,
+                        _settings.ShowCarNumber, Color.FromArgb(34, 197, 94), s
+                    );
+                    curY += rowH + gapY;
 
-                g.DrawString("Projected +/- iR", fLabel, Brushes.Gainsboro, new RectangleF(c1X, curY, c1W * 0.50f, rowH), leftFmt);
-                _btnStandingsDeltaIr = DrawButton(
-                    g, fBtn,
-                    _settings.ShowDeltaIR ? "SHOW (+/- iR)" : "HIDDEN",
-                    r1Start, curY, optW, rowH,
-                    _settings.ShowDeltaIR, Color.FromArgb(34, 197, 94), s
-                );
-                curY += rowH + gapY;
+                    g.DrawString("Timing Column", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnStandingsGap = DrawButton(
+                        g, fBtn,
+                        _settings.ShowInterval ? "INTERVAL AHEAD" : "GAP TO LEADER",
+                        rStart, curY, optW, rowH,
+                        true, Color.FromArgb(56, 189, 248), s
+                    );
+                    curY += rowH + gapY;
 
-                g.DrawString("Font Scale", fLabel, Brushes.Gainsboro, new RectangleF(c1X, curY, c1W * 0.50f, rowH), leftFmt);
-                _btnStandingsFontMinus = DrawButton(g, fBtn, "-", r1Start, curY, pmW, rowH, false, Color.Gray, s);
-                g.DrawString((int)Math.Round(_settings.StandingsFontScale * 100) + "%", fMono, Brushes.White,
-                    new RectangleF(r1Start + pmW, curY, valW, rowH), centerFmt);
-                _btnStandingsFontPlus = DrawButton(g, fBtn, "+", r1Start + pmW + valW, curY, pmW, rowH, false, Color.Gray, s);
-                curY += rowH + gapY;
+                    g.DrawString("iRating Display", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnStandingsCompactIr = DrawButton(
+                        g, fBtn,
+                        _settings.CompactIR ? "COMPACT (4.1k)" : "FULL (4,125)",
+                        rStart, curY, optW, rowH,
+                        _settings.CompactIR, Color.FromArgb(56, 189, 248), s
+                    );
+                    curY += rowH + gapY;
 
-                g.DrawString("Window Opacity", fLabel, Brushes.Gainsboro, new RectangleF(c1X, curY, c1W * 0.50f, rowH), leftFmt);
-                _btnStandingsOpacMinus = DrawButton(g, fBtn, "-", r1Start, curY, pmW, rowH, false, Color.Gray, s);
-                g.DrawString((int)Math.Round(_settings.StandingsOpacity * 100) + "%", fMono, Brushes.White,
-                    new RectangleF(r1Start + pmW, curY, valW, rowH), centerFmt);
-                _btnStandingsOpacPlus = DrawButton(g, fBtn, "+", r1Start + pmW + valW, curY, pmW, rowH, false, Color.Gray, s);
+                    g.DrawString("Projected +/- iR", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnStandingsDeltaIr = DrawButton(
+                        g, fBtn,
+                        _settings.ShowDeltaIR ? "SHOW (+/- iR)" : "HIDDEN",
+                        rStart, curY, optW, rowH,
+                        _settings.ShowDeltaIR, Color.FromArgb(34, 197, 94), s
+                    );
+                    curY += rowH + gapY;
 
-                _btnStandingsReset = DrawButton(g, fBtn, "RESET POSITION & SIZE", c1X, resetY, c1W, rowH, false, Color.FromArgb(56, 189, 248), s);
+                    g.DrawString("Font Scale", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnStandingsFontMinus = DrawButton(g, fBtn, "-", rStart, curY, pmW, rowH, false, Color.Gray, s);
+                    g.DrawString((int)Math.Round(_settings.StandingsFontScale * 100) + "%", fMono, Brushes.White,
+                        new RectangleF(rStart + pmW, curY, valW, rowH), centerFmt);
+                    _btnStandingsFontPlus = DrawButton(g, fBtn, "+", rStart + pmW + valW, curY, pmW, rowH, false, Color.Gray, s);
+                    curY += rowH + gapY;
 
-                // =====================================================
-                // CARD 2: DELTA BAR OVERLAY (OPTION C)
-                // =====================================================
-                int c2X = card2.Left + (int)Math.Round(14 * s);
-                int c2W = card2.Width - (int)Math.Round(28 * s);
-                curY = card2.Top + (int)Math.Round(12 * s);
+                    g.DrawString("Window Opacity", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnStandingsOpacMinus = DrawButton(g, fBtn, "-", rStart, curY, pmW, rowH, false, Color.Gray, s);
+                    g.DrawString((int)Math.Round(_settings.StandingsOpacity * 100) + "%", fMono, Brushes.White,
+                        new RectangleF(rStart + pmW, curY, valW, rowH), centerFmt);
+                    _btnStandingsOpacPlus = DrawButton(g, fBtn, "+", rStart + pmW + valW, curY, pmW, rowH, false, Color.Gray, s);
 
-                g.DrawString("2. DELTA BAR", fCardTitle, Brushes.White,
-                    new RectangleF(c2X, curY, c2W * 0.65f, rowH), leftFmt);
+                    _btnStandingsReset = DrawButton(g, fBtn, "RESET POSITION & SIZE", sx, resetY, sw, rowH, false, Color.FromArgb(56, 189, 248), s);
 
-                _btnDeltaToggle = DrawButton(
-                    g, fBtn,
-                    _settings.DeltaBarEnabled ? "ENABLED" : "OFF",
-                    c2X + c2W - togW, curY + 2, togW, rowH - 4,
-                    _settings.DeltaBarEnabled,
-                    _settings.DeltaBarEnabled ? Color.FromArgb(34, 197, 94) : Color.FromArgb(107, 114, 128),
-                    s
-                );
-                curY += rowH + (int)Math.Round(12 * s);
+                    DrawStandingsPreview(g, viewportRect, s);
+                }
+                else if (_activeTab == 1)
+                {
+                    // =====================================================
+                    // TAB 2: DELTA BAR SETTINGS + PREVIEW
+                    // =====================================================
+                    g.DrawString("DELTA BAR OVERLAY SETTINGS", fCardTitle, Brushes.White,
+                        new RectangleF(sx, curY, sw, rowH), leftFmt);
+                    curY += rowH + (int)Math.Round(6 * s);
 
-                g.DrawString("Reference Lap Mode", fLabel, Brushes.Gainsboro, new RectangleF(c2X, curY, c2W, (int)(18 * s)), leftFmt);
-                curY += (int)Math.Round(20 * s);
-                int refGap = (int)Math.Round(4 * s);
-                int refW = (c2W - refGap * 3) / 4;
-                int smallBtnH = (int)Math.Round(26 * s);
-                _btnDeltaRefBest = DrawButton(g, fBtn, "BEST", c2X, curY, refW, smallBtnH,
-                    _settings.DeltaRefMode == DeltaReferenceMode.SessionBest, Color.FromArgb(56, 189, 248), s);
-                _btnDeltaRefOpt = DrawButton(g, fBtn, "OPTIMAL", c2X + (refW + refGap), curY, refW, smallBtnH,
-                    _settings.DeltaRefMode == DeltaReferenceMode.SessionOptimal, Color.FromArgb(192, 132, 252), s);
-                _btnDeltaRefPers = DrawButton(g, fBtn, "PERS", c2X + (refW + refGap) * 2, curY, refW, smallBtnH,
-                    _settings.DeltaRefMode == DeltaReferenceMode.PersonalBest, Color.FromArgb(34, 197, 94), s);
-                _btnDeltaRefLast = DrawButton(g, fBtn, "LAST", c2X + (refW + refGap) * 3, curY, c2W - (refW + refGap) * 3, smallBtnH,
-                    _settings.DeltaRefMode == DeltaReferenceMode.LastLap, Color.FromArgb(245, 158, 11), s);
-                curY += smallBtnH + gapY;
+                    g.DrawString("Widget Status (Now)", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnDeltaToggle = DrawButton(
+                        g, fBtn,
+                        _settings.DeltaBarEnabled ? "OPEN (VISIBLE)" : "CLOSED (HIDDEN)",
+                        rStart, curY, optW, rowH,
+                        _settings.DeltaBarEnabled,
+                        _settings.DeltaBarEnabled ? Color.FromArgb(34, 197, 94) : Color.FromArgb(107, 114, 128),
+                        s
+                    );
+                    curY += rowH + gapY;
 
-                int r2Start = c2X + c2W - optW;
-                int rngW = (optW - 8) / 3;
-                g.DrawString("Bar Scale Range", fLabel, Brushes.Gainsboro, new RectangleF(c2X, curY, c2W * 0.48f, rowH), leftFmt);
-                _btnDeltaRange1 = DrawButton(g, fBtn, "±1.0s", r2Start, curY, rngW, rowH,
-                    Math.Abs(_settings.DeltaBarRangeSec - 1.0f) < 0.1f, Color.FromArgb(56, 189, 248), s);
-                _btnDeltaRange2 = DrawButton(g, fBtn, "±2.0s", r2Start + rngW + 4, curY, rngW, rowH,
-                    Math.Abs(_settings.DeltaBarRangeSec - 2.0f) < 0.1f, Color.FromArgb(56, 189, 248), s);
-                _btnDeltaRange5 = DrawButton(g, fBtn, "±5.0s", r2Start + (rngW + 4) * 2, curY, optW - (rngW + 4) * 2, rowH,
-                    Math.Abs(_settings.DeltaBarRangeSec - 5.0f) < 0.1f, Color.FromArgb(56, 189, 248), s);
-                curY += rowH + gapY;
+                    g.DrawString("Open Automatically on Launch", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnDeltaAutoOpen = DrawButton(
+                        g, fBtn,
+                        _settings.DeltaBarAutoOpen ? "YES (AUTO-OPEN)" : "NO (MANUAL)",
+                        rStart, curY, optW, rowH,
+                        _settings.DeltaBarAutoOpen,
+                        _settings.DeltaBarAutoOpen ? Color.FromArgb(56, 189, 248) : Color.FromArgb(107, 114, 128),
+                        s
+                    );
+                    curY += rowH + gapY;
 
-                g.DrawString("Official Sectors", fLabel, Brushes.Gainsboro, new RectangleF(c2X, curY, c2W * 0.50f, rowH), leftFmt);
-                _btnDeltaSectors = DrawButton(
-                    g, fBtn,
-                    _settings.ShowSectorSplits ? "SHOW SPLITS" : "HIDDEN",
-                    r2Start, curY, optW, rowH,
-                    _settings.ShowSectorSplits, Color.FromArgb(34, 197, 94), s
-                );
-                curY += rowH + gapY;
+                    using (Pen divPen = new Pen(Color.FromArgb(35, 255, 255, 255), 1f))
+                        g.DrawLine(divPen, sx, curY - (int)(4 * s), sx + sw, curY - (int)(4 * s));
 
-                g.DrawString("Font Scale", fLabel, Brushes.Gainsboro, new RectangleF(c2X, curY, c2W * 0.48f, rowH), leftFmt);
-                _btnDeltaFontMinus = DrawButton(g, fBtn, "-", r2Start, curY, pmW, rowH, false, Color.Gray, s);
-                g.DrawString((int)Math.Round(_settings.DeltaFontScale * 100) + "%", fMono, Brushes.White,
-                    new RectangleF(r2Start + pmW, curY, valW, rowH), centerFmt);
-                _btnDeltaFontPlus = DrawButton(g, fBtn, "+", r2Start + pmW + valW, curY, pmW, rowH, false, Color.Gray, s);
-                curY += rowH + gapY;
+                    g.DrawString("Reference Lap Mode", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw, (int)(18 * s)), leftFmt);
+                    curY += (int)Math.Round(20 * s);
+                    int refGap = (int)Math.Round(6 * s);
+                    int refW = (sw - refGap * 3) / 4;
+                    int smallBtnH = (int)Math.Round(28 * s);
+                    _btnDeltaRefBest = DrawButton(g, fBtn, "BEST", sx, curY, refW, smallBtnH,
+                        _settings.DeltaRefMode == DeltaReferenceMode.SessionBest, Color.FromArgb(56, 189, 248), s);
+                    _btnDeltaRefOpt = DrawButton(g, fBtn, "OPTIMAL", sx + (refW + refGap), curY, refW, smallBtnH,
+                        _settings.DeltaRefMode == DeltaReferenceMode.SessionOptimal, Color.FromArgb(192, 132, 252), s);
+                    _btnDeltaRefPers = DrawButton(g, fBtn, "PERSONAL", sx + (refW + refGap) * 2, curY, refW, smallBtnH,
+                        _settings.DeltaRefMode == DeltaReferenceMode.PersonalBest, Color.FromArgb(34, 197, 94), s);
+                    _btnDeltaRefLast = DrawButton(g, fBtn, "LAST LAP", sx + (refW + refGap) * 3, curY, sw - (refW + refGap) * 3, smallBtnH,
+                        _settings.DeltaRefMode == DeltaReferenceMode.LastLap, Color.FromArgb(245, 158, 11), s);
+                    curY += smallBtnH + gapY;
 
-                g.DrawString("Window Opacity", fLabel, Brushes.Gainsboro, new RectangleF(c2X, curY, c2W * 0.48f, rowH), leftFmt);
-                _btnDeltaOpacMinus = DrawButton(g, fBtn, "-", r2Start, curY, pmW, rowH, false, Color.Gray, s);
-                g.DrawString((int)Math.Round(_settings.DeltaOpacity * 100) + "%", fMono, Brushes.White,
-                    new RectangleF(r2Start + pmW, curY, valW, rowH), centerFmt);
-                _btnDeltaOpacPlus = DrawButton(g, fBtn, "+", r2Start + pmW + valW, curY, pmW, rowH, false, Color.Gray, s);
+                    int rngW = (optW - 8) / 3;
+                    g.DrawString("Bar Scale Range", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnDeltaRange1 = DrawButton(g, fBtn, "±1.0s", rStart, curY, rngW, rowH,
+                        Math.Abs(_settings.DeltaBarRangeSec - 1.0f) < 0.1f, Color.FromArgb(56, 189, 248), s);
+                    _btnDeltaRange2 = DrawButton(g, fBtn, "±2.0s", rStart + rngW + 4, curY, rngW, rowH,
+                        Math.Abs(_settings.DeltaBarRangeSec - 2.0f) < 0.1f, Color.FromArgb(56, 189, 248), s);
+                    _btnDeltaRange5 = DrawButton(g, fBtn, "±5.0s", rStart + (rngW + 4) * 2, curY, optW - (rngW + 4) * 2, rowH,
+                        Math.Abs(_settings.DeltaBarRangeSec - 5.0f) < 0.1f, Color.FromArgb(56, 189, 248), s);
+                    curY += rowH + gapY;
 
-                _btnDeltaReset = DrawButton(g, fBtn, "RESET POSITION & SIZE", c2X, resetY, c2W, rowH, false, Color.FromArgb(56, 189, 248), s);
+                    g.DrawString("Official Sectors", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnDeltaSectors = DrawButton(
+                        g, fBtn,
+                        _settings.ShowSectorSplits ? "SHOW SPLITS" : "HIDDEN",
+                        rStart, curY, optW, rowH,
+                        _settings.ShowSectorSplits, Color.FromArgb(34, 197, 94), s
+                    );
+                    curY += rowH + gapY;
 
-                // =====================================================
-                // CARD 3: GARAGE61 TELEMETRY & BRAKING COACH (A / B / C)
-                // =====================================================
-                int c3X = card3.Left + (int)Math.Round(14 * s);
-                int c3W = card3.Width - (int)Math.Round(28 * s);
-                curY = card3.Top + (int)Math.Round(12 * s);
+                    g.DrawString("Font Scale", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnDeltaFontMinus = DrawButton(g, fBtn, "-", rStart, curY, pmW, rowH, false, Color.Gray, s);
+                    g.DrawString((int)Math.Round(_settings.DeltaFontScale * 100) + "%", fMono, Brushes.White,
+                        new RectangleF(rStart + pmW, curY, valW, rowH), centerFmt);
+                    _btnDeltaFontPlus = DrawButton(g, fBtn, "+", rStart + pmW + valW, curY, pmW, rowH, false, Color.Gray, s);
+                    curY += rowH + gapY;
 
-                g.DrawString("3. GARAGE61 COACH", fCardTitle, Brushes.White,
-                    new RectangleF(c3X, curY, c3W * 0.68f, rowH), leftFmt);
+                    g.DrawString("Window Opacity", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnDeltaOpacMinus = DrawButton(g, fBtn, "-", rStart, curY, pmW, rowH, false, Color.Gray, s);
+                    g.DrawString((int)Math.Round(_settings.DeltaOpacity * 100) + "%", fMono, Brushes.White,
+                        new RectangleF(rStart + pmW, curY, valW, rowH), centerFmt);
+                    _btnDeltaOpacPlus = DrawButton(g, fBtn, "+", rStart + pmW + valW, curY, pmW, rowH, false, Color.Gray, s);
 
-                _btnG61Toggle = DrawButton(
-                    g, fBtn,
-                    _settings.Garage61Enabled ? "ENABLED" : "OFF",
-                    c3X + c3W - togW, curY + 2, togW, rowH - 4,
-                    _settings.Garage61Enabled,
-                    _settings.Garage61Enabled ? Color.FromArgb(34, 197, 94) : Color.FromArgb(107, 114, 128),
-                    s
-                );
-                curY += rowH + (int)Math.Round(12 * s);
+                    _btnDeltaReset = DrawButton(g, fBtn, "RESET POSITION & SIZE", sx, resetY, sw, rowH, false, Color.FromArgb(56, 189, 248), s);
 
-                // Selectable Design Style (Option A / Option B / Option C)
-                g.DrawString("Overlay Design Style", fLabel, Brushes.Gainsboro, new RectangleF(c3X, curY, c3W, (int)(18 * s)), leftFmt);
-                curY += (int)Math.Round(20 * s);
-                int stW = (c3W - refGap * 2) / 3;
-                _btnG61StyleA = DrawButton(g, fBtn, "OPT A: TRACE", c3X, curY, stW, smallBtnH,
-                    _settings.Garage61Style == Garage61LayoutStyle.OptionA_LookaheadTraceAndPedals, Color.FromArgb(56, 189, 248), s);
-                _btnG61StyleB = DrawButton(g, fBtn, "OPT B: BAR", c3X + stW + refGap, curY, stW, smallBtnH,
-                    _settings.Garage61Style == Garage61LayoutStyle.OptionB_CompactBrakeCoach, Color.FromArgb(244, 63, 94), s);
-                _btnG61StyleC = DrawButton(g, fBtn, "OPT C: AUDIT", c3X + (stW + refGap) * 2, curY, c3W - (stW + refGap) * 2, smallBtnH,
-                    _settings.Garage61Style == Garage61LayoutStyle.OptionC_ProBoxWithCornerAudit, Color.FromArgb(192, 132, 252), s);
-                curY += smallBtnH + gapY;
+                    DrawDeltaBarPreview(g, viewportRect, s);
+                }
+                else
+                {
+                    // =====================================================
+                    // TAB 3: GARAGE61 COACH SETTINGS + PREVIEW
+                    // =====================================================
+                    g.DrawString("GARAGE61 COACH SETTINGS", fCardTitle, Brushes.White,
+                        new RectangleF(sx, curY, sw, rowH), leftFmt);
+                    curY += rowH + (int)Math.Round(4 * s);
 
-                int r3Start = c3X + c3W - optW;
-                g.DrawString("Braking Audio Cues", fLabel, Brushes.Gainsboro, new RectangleF(c3X, curY, c3W * 0.48f, rowH), leftFmt);
-                int audW = (int)Math.Round(optW * 0.65f);
-                int tstW = optW - audW - 4;
-                _btnG61AudioToggle = DrawButton(
-                    g, fBtn,
-                    _settings.Garage61AudioEnabled ? "BEEPS ON" : "MUTED",
-                    r3Start, curY, audW, rowH,
-                    _settings.Garage61AudioEnabled, Color.FromArgb(34, 197, 94), s
-                );
-                _btnG61AudioTest = DrawButton(g, fBtn, "TEST", r3Start + audW + 4, curY, tstW, rowH, false, Color.FromArgb(56, 189, 248), s);
-                curY += rowH + gapY;
+                    int gRowH = (int)Math.Round(27 * s);
+                    int gGapY = (int)Math.Round(8 * s);
 
-                g.DrawString("Lookahead Window", fLabel, Brushes.Gainsboro, new RectangleF(c3X, curY, c3W * 0.48f, rowH), leftFmt);
-                _btnG61Look80 = DrawButton(g, fBtn, "+80m", r3Start, curY, rngW, rowH,
-                    _settings.Garage61LookaheadMeters == 80, Color.FromArgb(56, 189, 248), s);
-                _btnG61Look120 = DrawButton(g, fBtn, "+120m", r3Start + rngW + 4, curY, rngW, rowH,
-                    _settings.Garage61LookaheadMeters == 120, Color.FromArgb(56, 189, 248), s);
-                _btnG61Look180 = DrawButton(g, fBtn, "+180m", r3Start + (rngW + 4) * 2, curY, optW - (rngW + 4) * 2, rowH,
-                    _settings.Garage61LookaheadMeters == 180, Color.FromArgb(56, 189, 248), s);
-                curY += rowH + gapY;
+                    g.DrawString("Widget Status (Now)", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, gRowH), leftFmt);
+                    _btnG61Toggle = DrawButton(
+                        g, fBtn,
+                        _settings.Garage61Enabled ? "OPEN (VISIBLE)" : "CLOSED (HIDDEN)",
+                        rStart, curY, optW, gRowH,
+                        _settings.Garage61Enabled,
+                        _settings.Garage61Enabled ? Color.FromArgb(34, 197, 94) : Color.FromArgb(107, 114, 128),
+                        s
+                    );
+                    curY += gRowH + gGapY;
 
-                g.DrawString("Reference Lap CSV", fLabel, Brushes.Gainsboro, new RectangleF(c3X, curY, c3W * 0.48f, rowH), leftFmt);
-                int csvW = (int)Math.Round(optW * 0.62f);
-                int defW = optW - csvW - 4;
-                _btnG61LoadCsv = DrawButton(g, fBtn, "LOAD CSV...", r3Start, curY, csvW, rowH, true, Color.FromArgb(34, 197, 94), s);
-                _btnG61DefaultLap = DrawButton(g, fBtn, "SPA", r3Start + csvW + 4, curY, defW, rowH, string.IsNullOrEmpty(_settings.Garage61CsvPath), Color.FromArgb(56, 189, 248), s);
-                curY += rowH + gapY;
+                    g.DrawString("Open Automatically on Launch", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, gRowH), leftFmt);
+                    _btnG61AutoOpen = DrawButton(
+                        g, fBtn,
+                        _settings.Garage61AutoOpen ? "YES (AUTO-OPEN)" : "NO (MANUAL)",
+                        rStart, curY, optW, gRowH,
+                        _settings.Garage61AutoOpen,
+                        _settings.Garage61AutoOpen ? Color.FromArgb(56, 189, 248) : Color.FromArgb(107, 114, 128),
+                        s
+                    );
+                    curY += gRowH + gGapY;
 
-                g.DrawString("Font Scale", fLabel, Brushes.Gainsboro, new RectangleF(c3X, curY, c3W * 0.48f, rowH), leftFmt);
-                _btnG61FontMinus = DrawButton(g, fBtn, "-", r3Start, curY, pmW, rowH, false, Color.Gray, s);
-                g.DrawString((int)Math.Round(_settings.Garage61FontScale * 100) + "%", fMono, Brushes.White,
-                    new RectangleF(r3Start + pmW, curY, valW, rowH), centerFmt);
-                _btnG61FontPlus = DrawButton(g, fBtn, "+", r3Start + pmW + valW, curY, pmW, rowH, false, Color.Gray, s);
-                curY += rowH + gapY;
+                    int refGap = (int)Math.Round(6 * s);
+                    int stW = (sw - refGap * 2) / 3;
+                    _btnG61StyleA = DrawButton(g, fBtn, "OPT A: TRACE", sx, curY, stW, gRowH,
+                        _settings.Garage61Style == Garage61LayoutStyle.OptionA_LookaheadTraceAndPedals, Color.FromArgb(56, 189, 248), s);
+                    _btnG61StyleB = DrawButton(g, fBtn, "OPT B: BAR", sx + stW + refGap, curY, stW, gRowH,
+                        _settings.Garage61Style == Garage61LayoutStyle.OptionB_CompactBrakeCoach, Color.FromArgb(244, 63, 94), s);
+                    _btnG61StyleC = DrawButton(g, fBtn, "OPT C: AUDIT", sx + (stW + refGap) * 2, curY, sw - (stW + refGap) * 2, gRowH,
+                        _settings.Garage61Style == Garage61LayoutStyle.OptionC_ProBoxWithCornerAudit, Color.FromArgb(192, 132, 252), s);
+                    curY += gRowH + gGapY;
 
-                g.DrawString("Window Opacity", fLabel, Brushes.Gainsboro, new RectangleF(c3X, curY, c3W * 0.48f, rowH), leftFmt);
-                _btnG61OpacMinus = DrawButton(g, fBtn, "-", r3Start, curY, pmW, rowH, false, Color.Gray, s);
-                g.DrawString((int)Math.Round(_settings.Garage61Opacity * 100) + "%", fMono, Brushes.White,
-                    new RectangleF(r3Start + pmW, curY, valW, rowH), centerFmt);
-                _btnG61OpacPlus = DrawButton(g, fBtn, "+", r3Start + pmW + valW, curY, pmW, rowH, false, Color.Gray, s);
+                    g.DrawString("Braking Audio Cues", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, gRowH), leftFmt);
+                    int audW = (int)Math.Round(optW * 0.65f);
+                    int tstW = optW - audW - 4;
+                    _btnG61AudioToggle = DrawButton(
+                        g, fBtn,
+                        _settings.Garage61AudioEnabled ? "BEEPS ON" : "MUTED",
+                        rStart, curY, audW, gRowH,
+                        _settings.Garage61AudioEnabled, Color.FromArgb(34, 197, 94), s
+                    );
+                    _btnG61AudioTest = DrawButton(g, fBtn, "TEST", rStart + audW + 4, curY, tstW, gRowH, false, Color.FromArgb(56, 189, 248), s);
+                    curY += gRowH + gGapY;
 
-                _btnG61Reset = DrawButton(g, fBtn, "RESET POSITION & SIZE", c3X, resetY, c3W, rowH, false, Color.FromArgb(56, 189, 248), s);
+                    int rngW = (optW - 8) / 3;
+                    g.DrawString("Lookahead Window", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, gRowH), leftFmt);
+                    _btnG61Look80 = DrawButton(g, fBtn, "+80m", rStart, curY, rngW, gRowH,
+                        _settings.Garage61LookaheadMeters == 80, Color.FromArgb(56, 189, 248), s);
+                    _btnG61Look120 = DrawButton(g, fBtn, "+120m", rStart + rngW + 4, curY, rngW, gRowH,
+                        _settings.Garage61LookaheadMeters == 120, Color.FromArgb(56, 189, 248), s);
+                    _btnG61Look180 = DrawButton(g, fBtn, "+180m", rStart + (rngW + 4) * 2, curY, optW - (rngW + 4) * 2, gRowH,
+                        _settings.Garage61LookaheadMeters == 180, Color.FromArgb(56, 189, 248), s);
+                    curY += gRowH + gGapY;
 
-                // Footer status bar
+                    g.DrawString("Reference Lap CSV", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, gRowH), leftFmt);
+                    int csvW = (int)Math.Round(optW * 0.65f);
+                    int defW = optW - csvW - 4;
+                    _btnG61LoadCsv = DrawButton(g, fBtn, "LOAD CSV...", rStart, curY, csvW, gRowH, true, Color.FromArgb(34, 197, 94), s);
+                    _btnG61DefaultLap = DrawButton(g, fBtn, "SPA", rStart + csvW + 4, curY, defW, gRowH, string.IsNullOrEmpty(_settings.Garage61CsvPath), Color.FromArgb(56, 189, 248), s);
+                    curY += gRowH + gGapY;
+
+                    g.DrawString("Font Scale", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, gRowH), leftFmt);
+                    _btnG61FontMinus = DrawButton(g, fBtn, "-", rStart, curY, pmW, gRowH, false, Color.Gray, s);
+                    g.DrawString((int)Math.Round(_settings.Garage61FontScale * 100) + "%", fMono, Brushes.White,
+                        new RectangleF(rStart + pmW, curY, valW, gRowH), centerFmt);
+                    _btnG61FontPlus = DrawButton(g, fBtn, "+", rStart + pmW + valW, curY, pmW, gRowH, false, Color.Gray, s);
+                    curY += gRowH + gGapY;
+
+                    g.DrawString("Window Opacity", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, gRowH), leftFmt);
+                    _btnG61OpacMinus = DrawButton(g, fBtn, "-", rStart, curY, pmW, gRowH, false, Color.Gray, s);
+                    g.DrawString((int)Math.Round(_settings.Garage61Opacity * 100) + "%", fMono, Brushes.White,
+                        new RectangleF(rStart + pmW, curY, valW, gRowH), centerFmt);
+                    _btnG61OpacPlus = DrawButton(g, fBtn, "+", rStart + pmW + valW, curY, pmW, gRowH, false, Color.Gray, s);
+
+                    _btnG61Reset = DrawButton(g, fBtn, "RESET POSITION & SIZE", sx, resetY, sw, rowH, false, Color.FromArgb(56, 189, 248), s);
+
+                    DrawGarage61Preview(g, viewportRect, s);
+                }
+
+                // 4. Footer Status Bar
                 int footY = Height - footerH;
                 using (SolidBrush fb = new SolidBrush(Color.FromArgb(15, 19, 28)))
                 {

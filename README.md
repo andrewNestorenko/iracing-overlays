@@ -10,14 +10,18 @@ It also includes a built-in **20-car GT3 + 60Hz Delta Simulator** so you can pos
 
 All overlays and the configuration hub are packaged inside a single standalone executable (`FreeOverlay.exe`):
 
-### 1. Free Overlay Hub (Control Center & Settings)
+### 1. Free Overlay Hub (Tabbed Control Center, Auto-Open & Widget Previews)
 - Opens on launch and can be toggled anytime via **`F5`** or the Windows system tray icon.
-- **Toggle Overlays On / Off**: Enable or disable the **Standings Overlay**, **Delta Bar Overlay**, and **Garage61 Telemetry & Braking Coach Overlay** independently.
+- **Dedicated Tab per Widget**: Switch between **`1. STANDINGS`**, **`2. DELTA BAR`**, and **`3. GARAGE61 COACH`** tabs, each displaying live `OPEN / OFF` and `AUTO: ON / OFF` status badges.
+- **Show Now vs. Auto-Open on App Launch**:
+  - **Widget Status (Now)**: Immediately open (`OPEN (VISIBLE)`) or hide (`CLOSED (HIDDEN)`) the overlay during your current session.
+  - **Open Automatically on Launch**: Choose (`YES (AUTO-OPEN)` vs `NO (MANUAL)`) whether each widget opens automatically every time `FreeOverlay.exe` starts.
+- **Live Widget Screenshot Preview**: Each widget's settings tab includes a dedicated **Widget Preview** viewport on the right showing a high-DPI screenshot of that widget that dynamically updates as you toggle columns, sector splits, or Garage61 layout styles (`Option A`, `Option B`, `Option C`).
 - **Live Per-Widget Customization**:
-  - **Standings Settings**: Timing column (`GAP TO LEADER` vs `INTERVAL AHEAD`), iRating display (`FULL 4,125` vs `COMPACT 4.1k`), show/hide projected `±iR` delta, Font Scale (`65%`–`175%`), Window Opacity (`45%`–`100%`), and `Reset Position & Size`.
+  - **Standings Settings**: Car Number (`#`) visibility, Timing column (`GAP TO LEADER` vs `INTERVAL AHEAD`), iRating display (`FULL 4,125` vs `COMPACT 4.1k`), show/hide projected `±iR` delta, Font Scale (`65%`–`175%`), Window Opacity (`45%`–`100%`), and `Reset Position & Size`.
   - **Delta Bar Settings**: Reference Lap Mode (`Session Best`, `Optimal`, `Personal Best`, `Last Lap`), Bar Scale Range (`±1.0s`, `±2.0s`, `±5.0s`), show/hide Sector Splits (`S1..Sn`), Font Scale, Window Opacity, and `Reset Position & Size`.
-  - **Garage61 Coach Settings**: Layout Style (`OPT A: TRACE`, `OPT B: BAR`, `OPT C: AUDIT`), Lookahead Window (`+80m`, `+120m`, `+180m`), Reference Lap `.csv` loader (`LOAD CSV...` or built-in `SPA` GT3 reference lap), Font Scale, Window Opacity, and `Reset Position & Size`.
-- **Automatic Persistence**: All settings, window coordinates, dimensions, and font scales are saved automatically to `%LOCALAPPDATA%\FreeOverlay\settings.cfg`.
+  - **Garage61 Coach Settings**: Layout Style (`OPT A: TRACE`, `OPT B: BAR`, `OPT C: AUDIT`), Braking Audio Cues (`BEEPS ON` / `MUTED` + `TEST`), Lookahead Window (`+80m`, `+120m`, `+180m`), Reference Lap `.csv` loader (`LOAD CSV...` or built-in `SPA` GT3 reference lap), Font Scale, Window Opacity, and `Reset Position & Size`.
+- **Automatic Persistence**: All settings, auto-open preferences, window coordinates, dimensions, and font scales are saved automatically to `%LOCALAPPDATA%\FreeOverlay\settings.cfg`.
 
 ### 2. Standings Overlay
 - **Position (`P`)** & **Car Number (`#`)** with class color bar and podium badges.
