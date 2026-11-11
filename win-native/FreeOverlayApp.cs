@@ -58,14 +58,32 @@ namespace FreeOverlay
         OptionC_ProBoxWithCornerAudit = 2
     }
 
+    public enum RelativeGapLayoutStyle
+    {
+        OptionA_StackedSightline = 0,
+        OptionB_HorizontalStrip = 1,
+        OptionC_MinimalThreatBar = 2
+    }
+
+    public enum OverlapRadarLayoutStyle
+    {
+        OptionA_MinimalTopDown = 0,
+        OptionB_ParallelStrips = 1,
+        OptionC_SubtleSideBars = 2
+    }
+
     public class OverlaySettings
     {
         public bool StandingsEnabled = true;
         public bool DeltaBarEnabled = true;
         public bool Garage61Enabled = true;
+        public bool RelativeGapEnabled = true;
+        public bool RadarEnabled = true;
         public bool StandingsAutoOpen = true;
         public bool DeltaBarAutoOpen = true;
         public bool Garage61AutoOpen = true;
+        public bool RelativeGapAutoOpen = true;
+        public bool RadarAutoOpen = true;
         public bool Locked = false;
         public TelemetryMode Mode = TelemetryMode.Auto;
 
@@ -104,6 +122,28 @@ namespace FreeOverlay
         public int Garage61H = 0;
         public string Garage61CsvPath = "";
 
+        // Relative Gap (Ahead / Behind + Overtake Alert) Settings (Options A / B / C)
+        public RelativeGapLayoutStyle RelativeGapStyle = RelativeGapLayoutStyle.OptionA_StackedSightline;
+        public bool RelativeOvertakeAlert = true;
+        public float RelativeOvertakeThresholdSec = 0.40f;
+        public float RelativeGapFontScale = 1.0f;
+        public float RelativeGapOpacity = 0.92f;
+        public int RelativeGapX = -1;
+        public int RelativeGapY = -1;
+        public int RelativeGapW = 0;
+        public int RelativeGapH = 0;
+
+        // Overlap & Blindspot Radar Settings (Options A / B / C — Auto-Hide when clear)
+        public OverlapRadarLayoutStyle RadarStyle = OverlapRadarLayoutStyle.OptionB_ParallelStrips;
+        public float RadarTriggerRangeMeters = 8.5f;
+        public float RadarCarLengthMeters = 4.6f;
+        public float RadarFontScale = 1.0f;
+        public float RadarOpacity = 0.85f;
+        public int RadarX = -1;
+        public int RadarY = -1;
+        public int RadarW = 0;
+        public int RadarH = 0;
+
         public event EventHandler Changed;
 
         public void NotifyChanged()
@@ -131,9 +171,13 @@ namespace FreeOverlay
                 sb.AppendLine("StandingsEnabled=" + StandingsEnabled);
                 sb.AppendLine("DeltaBarEnabled=" + DeltaBarEnabled);
                 sb.AppendLine("Garage61Enabled=" + Garage61Enabled);
+                sb.AppendLine("RelativeGapEnabled=" + RelativeGapEnabled);
+                sb.AppendLine("RadarEnabled=" + RadarEnabled);
                 sb.AppendLine("StandingsAutoOpen=" + StandingsAutoOpen);
                 sb.AppendLine("DeltaBarAutoOpen=" + DeltaBarAutoOpen);
                 sb.AppendLine("Garage61AutoOpen=" + Garage61AutoOpen);
+                sb.AppendLine("RelativeGapAutoOpen=" + RelativeGapAutoOpen);
+                sb.AppendLine("RadarAutoOpen=" + RadarAutoOpen);
                 sb.AppendLine("Mode=" + (int)Mode);
                 sb.AppendLine("ShowCarNumber=" + ShowCarNumber);
                 sb.AppendLine("ShowInterval=" + ShowInterval);
@@ -164,6 +208,24 @@ namespace FreeOverlay
                 sb.AppendLine("Garage61W=" + Garage61W);
                 sb.AppendLine("Garage61H=" + Garage61H);
                 sb.AppendLine("Garage61CsvPath=" + (Garage61CsvPath ?? ""));
+                sb.AppendLine("RelativeGapStyle=" + (int)RelativeGapStyle);
+                sb.AppendLine("RelativeOvertakeAlert=" + RelativeOvertakeAlert);
+                sb.AppendLine("RelativeOvertakeThresholdSec=" + RelativeOvertakeThresholdSec.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("RelativeGapFontScale=" + RelativeGapFontScale.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("RelativeGapOpacity=" + RelativeGapOpacity.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("RelativeGapX=" + RelativeGapX);
+                sb.AppendLine("RelativeGapY=" + RelativeGapY);
+                sb.AppendLine("RelativeGapW=" + RelativeGapW);
+                sb.AppendLine("RelativeGapH=" + RelativeGapH);
+                sb.AppendLine("RadarStyle=" + (int)RadarStyle);
+                sb.AppendLine("RadarTriggerRangeMeters=" + RadarTriggerRangeMeters.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("RadarCarLengthMeters=" + RadarCarLengthMeters.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("RadarFontScale=" + RadarFontScale.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("RadarOpacity=" + RadarOpacity.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("RadarX=" + RadarX);
+                sb.AppendLine("RadarY=" + RadarY);
+                sb.AppendLine("RadarW=" + RadarW);
+                sb.AppendLine("RadarH=" + RadarH);
                 File.WriteAllText(GetConfigPath(), sb.ToString(), Encoding.UTF8);
             }
             catch
@@ -180,6 +242,8 @@ namespace FreeOverlay
                 bool hasStandingsAuto = false;
                 bool hasDeltaAuto = false;
                 bool hasG61Auto = false;
+                bool hasRelAuto = false;
+                bool hasRadarAuto = false;
                 string[] lines = File.ReadAllLines(path, Encoding.UTF8);
                 for (int i = 0; i < lines.Length; i++)
                 {
@@ -194,9 +258,13 @@ namespace FreeOverlay
                     if (k == "StandingsEnabled" && bool.TryParse(v, out bv)) StandingsEnabled = bv;
                     else if (k == "DeltaBarEnabled" && bool.TryParse(v, out bv)) DeltaBarEnabled = bv;
                     else if (k == "Garage61Enabled" && bool.TryParse(v, out bv)) Garage61Enabled = bv;
+                    else if (k == "RelativeGapEnabled" && bool.TryParse(v, out bv)) RelativeGapEnabled = bv;
+                    else if (k == "RadarEnabled" && bool.TryParse(v, out bv)) RadarEnabled = bv;
                     else if (k == "StandingsAutoOpen" && bool.TryParse(v, out bv)) { StandingsAutoOpen = bv; hasStandingsAuto = true; }
                     else if (k == "DeltaBarAutoOpen" && bool.TryParse(v, out bv)) { DeltaBarAutoOpen = bv; hasDeltaAuto = true; }
                     else if (k == "Garage61AutoOpen" && bool.TryParse(v, out bv)) { Garage61AutoOpen = bv; hasG61Auto = true; }
+                    else if (k == "RelativeGapAutoOpen" && bool.TryParse(v, out bv)) { RelativeGapAutoOpen = bv; hasRelAuto = true; }
+                    else if (k == "RadarAutoOpen" && bool.TryParse(v, out bv)) { RadarAutoOpen = bv; hasRadarAuto = true; }
                     else if (k == "Mode" && int.TryParse(v, out iv)) Mode = (TelemetryMode)(iv % 3);
                     else if (k == "ShowCarNumber" && bool.TryParse(v, out bv)) ShowCarNumber = bv;
                     else if (k == "ShowInterval" && bool.TryParse(v, out bv)) ShowInterval = bv;
@@ -227,13 +295,35 @@ namespace FreeOverlay
                     else if (k == "Garage61W" && int.TryParse(v, out iv)) Garage61W = iv;
                     else if (k == "Garage61H" && int.TryParse(v, out iv)) Garage61H = iv;
                     else if (k == "Garage61CsvPath") Garage61CsvPath = v;
+                    else if (k == "RelativeGapStyle" && int.TryParse(v, out iv)) RelativeGapStyle = (RelativeGapLayoutStyle)(iv % 3);
+                    else if (k == "RelativeOvertakeAlert" && bool.TryParse(v, out bv)) RelativeOvertakeAlert = bv;
+                    else if (k == "RelativeOvertakeThresholdSec" && float.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out fv)) RelativeOvertakeThresholdSec = Math.Max(0.20f, Math.Min(1.20f, fv));
+                    else if (k == "RelativeGapFontScale" && float.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out fv)) RelativeGapFontScale = Math.Max(0.65f, Math.Min(1.75f, fv));
+                    else if (k == "RelativeGapOpacity" && float.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out fv)) RelativeGapOpacity = Math.Max(0.45f, Math.Min(1.0f, fv));
+                    else if (k == "RelativeGapX" && int.TryParse(v, out iv)) RelativeGapX = iv;
+                    else if (k == "RelativeGapY" && int.TryParse(v, out iv)) RelativeGapY = iv;
+                    else if (k == "RelativeGapW" && int.TryParse(v, out iv)) RelativeGapW = iv;
+                    else if (k == "RelativeGapH" && int.TryParse(v, out iv)) RelativeGapH = iv;
+                    else if (k == "RadarStyle" && int.TryParse(v, out iv)) RadarStyle = (OverlapRadarLayoutStyle)(iv % 3);
+                    else if (k == "RadarTriggerRangeMeters" && float.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out fv)) RadarTriggerRangeMeters = Math.Max(5.0f, Math.Min(18.0f, fv));
+                    else if (k == "RadarCarLengthMeters" && float.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out fv)) RadarCarLengthMeters = Math.Max(3.5f, Math.Min(6.5f, fv));
+                    else if (k == "RadarFontScale" && float.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out fv)) RadarFontScale = Math.Max(0.65f, Math.Min(1.75f, fv));
+                    else if (k == "RadarOpacity" && float.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out fv)) RadarOpacity = Math.Max(0.45f, Math.Min(1.0f, fv));
+                    else if (k == "RadarX" && int.TryParse(v, out iv)) RadarX = iv;
+                    else if (k == "RadarY" && int.TryParse(v, out iv)) RadarY = iv;
+                    else if (k == "RadarW" && int.TryParse(v, out iv)) RadarW = iv;
+                    else if (k == "RadarH" && int.TryParse(v, out iv)) RadarH = iv;
                 }
                 if (!hasStandingsAuto) StandingsAutoOpen = StandingsEnabled;
                 if (!hasDeltaAuto) DeltaBarAutoOpen = DeltaBarEnabled;
                 if (!hasG61Auto) Garage61AutoOpen = Garage61Enabled;
+                if (!hasRelAuto) RelativeGapAutoOpen = RelativeGapEnabled;
+                if (!hasRadarAuto) RadarAutoOpen = RadarEnabled;
                 StandingsEnabled = StandingsAutoOpen;
                 DeltaBarEnabled = DeltaBarAutoOpen;
                 Garage61Enabled = Garage61AutoOpen;
+                RelativeGapEnabled = RelativeGapAutoOpen;
+                RadarEnabled = RadarAutoOpen;
             }
             catch
             {
@@ -327,6 +417,17 @@ namespace FreeOverlay
         public float PlayerSpeedKph;
         public int PlayerGear;
 
+        // Live 60Hz Relative Gap (Ahead/Behind + Overtake Alert) & Proximity Overlap Radar
+        public float GapAheadSec;
+        public float GapBehindSec;
+        public float BehindClosingRateSecPerSec;
+        public int BehindThreatLevel; // 0 = Clear/Stable, 1 = Closing Fast in Draft, 2 = Overtake Attack / Divebomb
+        public bool RadarHasNearbyCar;
+        public bool RadarCarLeft;
+        public bool RadarCarRight;
+        public float RadarLeftLongitudinalMeters;
+        public float RadarRightLongitudinalMeters;
+
         public SessionSnapshot()
         {
             TrackName = "Circuit de Spa-Francorchamps";
@@ -344,6 +445,15 @@ namespace FreeOverlay
             PlayerThrottlePct = 100.0f;
             PlayerSpeedKph = 245.0f;
             PlayerGear = 5;
+            GapAheadSec = 1.42f;
+            GapBehindSec = 1.18f;
+            BehindClosingRateSecPerSec = 0.0f;
+            BehindThreatLevel = 0;
+            RadarHasNearbyCar = false;
+            RadarCarLeft = false;
+            RadarCarRight = false;
+            RadarLeftLongitudinalMeters = 99f;
+            RadarRightLongitudinalMeters = 99f;
         }
     }
 
@@ -1583,6 +1693,52 @@ namespace FreeOverlay
             snap.PlayerThrottlePct = Math.Max(0f, Math.Min(100f, simThr));
             snap.PlayerSpeedKph = simSpd;
             snap.PlayerGear = simGear;
+
+            // Simulate realistic Relative Gap (Ahead / Behind) + periodic Overtake Attack + Radar Overlap cycle
+            float cycle = (float)(_simPhase % 16.0);
+            snap.GapAheadSec = 1.25f + (float)(Math.Sin(_simPhase * 0.55) * 0.35);
+
+            if (cycle < 7.0f)
+            {
+                // Normal cruising gap behind (Radar auto-hidden because > 8.5m)
+                snap.GapBehindSec = 1.15f - cycle * 0.06f;
+                snap.BehindClosingRateSecPerSec = 0.08f;
+                snap.BehindThreatLevel = 0;
+                snap.RadarHasNearbyCar = false;
+                snap.RadarCarLeft = false;
+                snap.RadarCarRight = false;
+                snap.RadarLeftLongitudinalMeters = -18.0f;
+                snap.RadarRightLongitudinalMeters = 99.0f;
+            }
+            else if (cycle < 10.5f)
+            {
+                // Closing fast in slipstream (Threat Level 1)
+                float t = (cycle - 7.0f) / 3.5f;
+                snap.GapBehindSec = 0.73f - t * 0.36f;
+                snap.BehindClosingRateSecPerSec = 0.32f;
+                snap.BehindThreatLevel = 1;
+                float distMeters = -11.0f + t * 4.5f; // approaches from -11m to -6.5m
+                snap.RadarHasNearbyCar = Math.Abs(distMeters) <= 8.5f;
+                snap.RadarCarLeft = snap.RadarHasNearbyCar;
+                snap.RadarCarRight = false;
+                snap.RadarLeftLongitudinalMeters = distMeters;
+                snap.RadarRightLongitudinalMeters = 99.0f;
+            }
+            else
+            {
+                // Overtake attempt & side-by-side overlap sweep (Threat Level 2)
+                float t = (cycle - 10.5f) / 5.5f; // 0.0 -> 1.0
+                float longOffset = -6.5f + (float)Math.Sin(t * Math.PI) * 8.2f; // sweeps from -6.5m through +1.7m alongside and back
+                snap.GapBehindSec = Math.Max(0.03f, Math.Abs(longOffset) / 52.0f);
+                snap.BehindClosingRateSecPerSec = 0.48f;
+                snap.BehindThreatLevel = 2;
+                snap.RadarHasNearbyCar = Math.Abs(longOffset) <= 8.5f;
+                snap.RadarCarLeft = snap.RadarHasNearbyCar;
+                snap.RadarCarRight = false;
+                snap.RadarLeftLongitudinalMeters = longOffset;
+                snap.RadarRightLongitudinalMeters = 99.0f;
+            }
+
             return snap;
         }
     }
@@ -1652,6 +1808,7 @@ namespace FreeOverlay
         private int _offSpeed = -1;
         private int _offGear = -1;
         private int _offLapDistPct = -1;
+        private int _offCarLeftRight = -1;
         private int _offCarIdxPos = -1, _cntCarIdxPos = 0;
         private int _offCarIdxLap = -1, _cntCarIdxLap = 0;
         private int _offCarIdxLastLap = -1, _cntCarIdxLastLap = 0;
@@ -1659,6 +1816,10 @@ namespace FreeOverlay
         private int _offCarIdxLapDist = -1, _cntCarIdxLapDist = 0;
         private int _offCarIdxF2Time = -1, _cntCarIdxF2Time = 0;
         private int _offCarIdxOnPit = -1, _cntCarIdxOnPit = 0;
+
+        private float _prevGapBehindSec = -1f;
+        private float _smoothedBehindClosingRate = 0f;
+        private int _lastGapCalcTickMs = 0;
 
         private byte[] _varHeadersBuf;
         private byte[] _dataBuf;
@@ -1669,6 +1830,8 @@ namespace FreeOverlay
         private readonly float[] _lapDist = new float[64];
         private readonly float[] _f2Time = new float[64];
         private readonly bool[] _onPit = new bool[64];
+        private readonly float[] _continuousProg = new float[64];
+        private readonly int[] _prevLiveRank = new int[64];
 
         private int _lastSectorIdx = 0;
         private int _cachedSectorCount = 0;
@@ -1822,6 +1985,8 @@ namespace FreeOverlay
                 }
             }
             _cachedTrackLenMeters = Math.Max(500f, trackLenMeters);
+            Array.Clear(_continuousProg, 0, 64);
+            Array.Clear(_prevLiveRank, 0, 64);
 
             _cachedYamlDrivers.Clear();
             string driverInfoSection = ExtractTopLevelYamlSection(yaml, "DriverInfo");
@@ -1900,7 +2065,7 @@ namespace FreeOverlay
             _offDeltaSessionOpt = _offDeltaSessionOptDD = -1;
             _offDeltaBest = _offDeltaBestDD = -1;
             _offDeltaLast = _offDeltaLastDD = _offLapLastLapTime = -1;
-            _offBrake = _offThrottle = _offSpeed = _offGear = _offLapDistPct = -1;
+            _offBrake = _offThrottle = _offSpeed = _offGear = _offLapDistPct = _offCarLeftRight = -1;
             _offCarIdxPos = _offCarIdxLap = _offCarIdxLastLap = _offCarIdxBestLap = -1;
             _offCarIdxLapDist = _offCarIdxF2Time = _offCarIdxOnPit = -1;
 
@@ -1932,6 +2097,7 @@ namespace FreeOverlay
                 else if (vName == "Speed") _offSpeed = vOffset;
                 else if (vName == "Gear") _offGear = vOffset;
                 else if (vName == "LapDistPct") _offLapDistPct = vOffset;
+                else if (vName == "CarLeftRight") _offCarLeftRight = vOffset;
                 else if (vName == "CarIdxPosition") { _offCarIdxPos = vOffset; _cntCarIdxPos = Math.Min(64, vCount); }
                 else if (vName == "CarIdxLap") { _offCarIdxLap = vOffset; _cntCarIdxLap = Math.Min(64, vCount); }
                 else if (vName == "CarIdxLastLapTime") { _offCarIdxLastLap = vOffset; _cntCarIdxLastLap = Math.Min(64, vCount); }
@@ -2116,6 +2282,27 @@ namespace FreeOverlay
                         }
                         if (bLap > 0f && bLap < sessionBest) sessionBest = bLap;
 
+                        int curLap = _lap[cIdx];
+                        float curDistPct = _lapDist[cIdx];
+                        if (curLap > 0 || curDistPct > 0f)
+                        {
+                            float rawProg = curLap + Math.Max(0f, curDistPct);
+                            float prevProg = _continuousProg[cIdx];
+                            if (prevProg > 0f && !_onPit[cIdx])
+                            {
+                                // Protect against 1-tick S/F line wrap desync between CarIdxLap and CarIdxLapDistPct
+                                if (rawProg < prevProg - 0.55f && rawProg > prevProg - 1.15f)
+                                    rawProg += 1.0f;
+                                else if (rawProg > prevProg + 0.75f && rawProg < prevProg + 1.15f)
+                                    rawProg -= 1.0f;
+                            }
+                            _continuousProg[cIdx] = rawProg;
+                        }
+                        else
+                        {
+                            _continuousProg[cIdx] = 0f;
+                        }
+
                         DriverRow row = new DriverRow();
                         row.CarIdx = cIdx;
                         row.Position = _pos[cIdx];
@@ -2129,15 +2316,44 @@ namespace FreeOverlay
                         row.LastLapSec = lLap > 0f ? lLap : 0f;
                         row.BestLapSec = bLap > 0f ? bLap : 0f;
                         row.GapToLeaderSec = Math.Max(0f, _f2Time[cIdx]);
-                        row.Lap = _lap[cIdx];
-                        row.LapDistPct = _lapDist[cIdx];
+                        row.Lap = curLap;
+                        row.LapDistPct = curDistPct;
                         row.OnPitRoad = _onPit[cIdx];
                         row.IsPlayer = (cIdx == playerCarIdx);
                         rows.Add(row);
                     }
 
+                    // Hysteresis (~2.2m on track) so position swaps immediately once an overtake completes without side-by-side flicker
+                    float overtakeHysteresisPct = 2.2f / Math.Max(500f, _cachedTrackLenMeters);
+
                     rows.Sort(delegate(DriverRow a, DriverRow b)
                     {
+                        if (isRaceSession)
+                        {
+                            float progA = _continuousProg[a.CarIdx];
+                            float progB = _continuousProg[b.CarIdx];
+                            if (progA > 0f && progB > 0f)
+                            {
+                                float diff = progA - progB;
+                                if (Math.Abs(diff) > overtakeHysteresisPct)
+                                {
+                                    return progB.CompareTo(progA);
+                                }
+                                int prevRankA = _prevLiveRank[a.CarIdx];
+                                int prevRankB = _prevLiveRank[b.CarIdx];
+                                if (prevRankA > 0 && prevRankB > 0 && prevRankA != prevRankB)
+                                {
+                                    return prevRankA.CompareTo(prevRankB);
+                                }
+                                if (Math.Abs(diff) > 0.00001f)
+                                {
+                                    return progB.CompareTo(progA);
+                                }
+                            }
+                            else if (progA > 0f) return -1;
+                            else if (progB > 0f) return 1;
+                        }
+
                         if (a.Position > 0 && b.Position > 0) return a.Position.CompareTo(b.Position);
                         if (a.Position > 0) return -1;
                         if (b.Position > 0) return 1;
@@ -2147,9 +2363,9 @@ namespace FreeOverlay
                             if (a.BestLapSec > 0f) return -1;
                             if (b.BestLapSec > 0f) return 1;
                         }
-                        float progA = a.Lap + a.LapDistPct;
-                        float progB = b.Lap + b.LapDistPct;
-                        if (Math.Abs(progA - progB) > 0.001f) return progB.CompareTo(progA);
+                        float fallbackA = a.Lap + a.LapDistPct;
+                        float fallbackB = b.Lap + b.LapDistPct;
+                        if (Math.Abs(fallbackA - fallbackB) > 0.0001f) return fallbackB.CompareTo(fallbackA);
                         return b.IRating.CompareTo(a.IRating);
                     });
 
@@ -2159,10 +2375,15 @@ namespace FreeOverlay
 
                     int maxLap = 1;
                     float leaderBestLap = rows[0].BestLapSec;
+                    float refRaceLapSec = (sessionBest > 20f && sessionBest < float.MaxValue)
+                        ? sessionBest
+                        : (leaderBestLap > 20f ? leaderBestLap : (_cachedTrackLenMeters / 48.0f));
+
                     for (int i = 0; i < rows.Count; i++)
                     {
                         DriverRow d = rows[i];
                         d.Position = i + 1;
+                        _prevLiveRank[d.CarIdx] = d.Position;
                         if (d.Lap > maxLap) maxLap = d.Lap;
                         if (i == 0)
                         {
@@ -2176,8 +2397,23 @@ namespace FreeOverlay
                                 d.GapToLeaderSec = (d.BestLapSec > 0f && leaderBestLap > 0f)
                                     ? Math.Max(0f, d.BestLapSec - leaderBestLap)
                                     : 0f;
+                                d.IntervalAheadSec = Math.Max(0f, d.GapToLeaderSec - rows[i - 1].GapToLeaderSec);
                             }
-                            d.IntervalAheadSec = Math.Max(0f, d.GapToLeaderSec - rows[i - 1].GapToLeaderSec);
+                            else
+                            {
+                                float progAhead = _continuousProg[rows[i - 1].CarIdx];
+                                float progCur = _continuousProg[d.CarIdx];
+                                if (progAhead > 0f && progCur > 0f)
+                                {
+                                    float liveInterval = Math.Max(0f, (progAhead - progCur) * refRaceLapSec);
+                                    d.IntervalAheadSec = liveInterval;
+                                    d.GapToLeaderSec = rows[i - 1].GapToLeaderSec + liveInterval;
+                                }
+                                else
+                                {
+                                    d.IntervalAheadSec = Math.Max(0f, d.GapToLeaderSec - rows[i - 1].GapToLeaderSec);
+                                }
+                            }
                         }
 
                         if (d.LastLapSec > 0f && Math.Abs(d.LastLapSec - sessionBest) < 0.003f)
@@ -2298,6 +2534,115 @@ namespace FreeOverlay
                 dt.SectorDone = _secDone;
                 dt.OffTrack = (playerTrackSurface == 0);
 
+                // 60Hz Relative Gap & Overlap Radar calculation from CarIdxLapDistPct and CarLeftRight
+                int carLeftRight = _offCarLeftRight >= 0 ? BitConverter.ToInt32(_dataBuf, _offCarLeftRight) : 0;
+                float minAheadMeters = float.MaxValue;
+                float minBehindMeters = float.MaxValue;
+                float secondClosestMeters = float.MaxValue;
+                if (_offCarIdxLapDist >= 0)
+                {
+                    for (int i = 0; i < _cachedYamlDrivers.Count; i++)
+                    {
+                        int cIdx = _cachedYamlDrivers[i].CarIdx;
+                        if (cIdx == playerCarIdx || cIdx < 0 || cIdx >= _cntCarIdxLapDist) continue;
+                        if (_offCarIdxOnPit >= 0 && cIdx < _cntCarIdxOnPit && _dataBuf[_offCarIdxOnPit + cIdx] != 0) continue;
+
+                        float cPct = BitConverter.ToSingle(_dataBuf, _offCarIdxLapDist + cIdx * 4);
+                        if (cPct < 0f) continue;
+
+                        float diffPct = cPct - playerPct;
+                        if (diffPct > 0.5f) diffPct -= 1.0f;
+                        else if (diffPct < -0.5f) diffPct += 1.0f;
+
+                        float distM = diffPct * _cachedTrackLenMeters;
+                        float absM = Math.Abs(distM);
+                        if (distM >= 0f)
+                        {
+                            if (distM < minAheadMeters)
+                            {
+                                if (minAheadMeters < secondClosestMeters) secondClosestMeters = minAheadMeters;
+                                minAheadMeters = distM;
+                            }
+                            else if (absM < secondClosestMeters)
+                            {
+                                secondClosestMeters = distM;
+                            }
+                        }
+                        else
+                        {
+                            float behindAbs = -distM;
+                            if (behindAbs < minBehindMeters)
+                            {
+                                if (-minBehindMeters < secondClosestMeters) secondClosestMeters = -minBehindMeters;
+                                minBehindMeters = behindAbs;
+                            }
+                            else if (absM < Math.Abs(secondClosestMeters))
+                            {
+                                secondClosestMeters = distM;
+                            }
+                        }
+                    }
+                }
+
+                float refSpeedMs = Math.Max(22.0f, playerSpeedMs);
+                float gapAheadSec = minAheadMeters < float.MaxValue ? (minAheadMeters / refSpeedMs) : 0f;
+                float gapBehindSec = minBehindMeters < float.MaxValue ? (minBehindMeters / refSpeedMs) : 0f;
+
+                int nowMs = Environment.TickCount;
+                float dtGapSec = (_lastGapCalcTickMs != 0) ? Math.Max(0.005f, Math.Min(0.5f, (nowMs - _lastGapCalcTickMs) * 0.001f)) : 0.016f;
+                _lastGapCalcTickMs = nowMs;
+
+                if (_prevGapBehindSec > 0f && gapBehindSec > 0f && Math.Abs(_prevGapBehindSec - gapBehindSec) < 2.0f)
+                {
+                    float instRate = (_prevGapBehindSec - gapBehindSec) / dtGapSec;
+                    _smoothedBehindClosingRate = _smoothedBehindClosingRate * 0.82f + instRate * 0.18f;
+                }
+                else
+                {
+                    _smoothedBehindClosingRate = 0f;
+                }
+                _prevGapBehindSec = gapBehindSec;
+
+                int threatLevel = 0;
+                if (gapBehindSec > 0f && gapBehindSec <= 0.38f && (_smoothedBehindClosingRate >= 0.08f || carLeftRight >= 2))
+                    threatLevel = 2; // Overtake attack / divebomb
+                else if (gapBehindSec > 0f && gapBehindSec <= 0.90f && _smoothedBehindClosingRate >= 0.12f)
+                    threatLevel = 1; // Closing fast in slipstream
+
+                // Closest longitudinal offset (positive = ahead of player center, negative = behind player center)
+                float closestSignedMeters = 99.0f;
+                if (minBehindMeters <= minAheadMeters && minBehindMeters < float.MaxValue)
+                    closestSignedMeters = -minBehindMeters;
+                else if (minAheadMeters < float.MaxValue)
+                    closestSignedMeters = minAheadMeters;
+
+                bool hasNearby = (Math.Abs(closestSignedMeters) <= 10.0f) || (carLeftRight >= 2);
+                bool carLeft = false;
+                bool carRight = false;
+                float leftLongM = 99.0f;
+                float rightLongM = 99.0f;
+
+                if (hasNearby)
+                {
+                    if (carLeftRight == 4) // 3-wide (CarLeftRight)
+                    {
+                        carLeft = true;
+                        carRight = true;
+                        leftLongM = Math.Abs(closestSignedMeters) <= 12.0f ? closestSignedMeters : 0.0f;
+                        rightLongM = Math.Abs(secondClosestMeters) <= 12.0f ? secondClosestMeters : (leftLongM * 0.5f);
+                    }
+                    else if (carLeftRight == 3 || carLeftRight == 6) // CarRight or TwoCarsRight
+                    {
+                        carRight = true;
+                        rightLongM = Math.Abs(closestSignedMeters) <= 12.0f ? closestSignedMeters : 0.0f;
+                    }
+                    else // CarLeft (2, 5) or approaching within radar range before spotter triggers
+                    {
+                        carLeft = true;
+                        leftLongM = Math.Abs(closestSignedMeters) <= 12.0f ? closestSignedMeters : 0.0f;
+                    }
+                }
+
                 SessionSnapshot snap = new SessionSnapshot();
                 snap.Connected = true;
                 snap.IsLiveSource = true;
@@ -2316,6 +2661,15 @@ namespace FreeOverlay
                 snap.PlayerThrottlePct = Math.Max(0f, Math.Min(100f, playerThrottleRaw * 100.0f));
                 snap.PlayerSpeedKph = Math.Max(0f, playerSpeedMs * 3.6f);
                 snap.PlayerGear = playerGearVal;
+                snap.GapAheadSec = gapAheadSec;
+                snap.GapBehindSec = gapBehindSec;
+                snap.BehindClosingRateSecPerSec = _smoothedBehindClosingRate;
+                snap.BehindThreatLevel = threatLevel;
+                snap.RadarHasNearbyCar = hasNearby;
+                snap.RadarCarLeft = carLeft;
+                snap.RadarCarRight = carRight;
+                snap.RadarLeftLongitudinalMeters = leftLongM;
+                snap.RadarRightLongitudinalMeters = rightLongM;
                 return snap;
             }
             catch
@@ -4926,6 +5280,1217 @@ namespace FreeOverlay
         }
     }
 
+    /// <summary>
+    /// Minimalist Relative Gap & Overtake Alert Widget (Widget #4):
+    /// Displays only two high-contrast numbers: Gap Ahead (+1.42s) and Gap Behind (-0.21s),
+    /// with a subtle muted amber/terracotta overtake alert when the car behind closes rapidly.
+    /// Supports 3 minimalist variations:
+    /// - Option A: Stacked Sightline Pill (2-row vertical stack)
+    /// - Option B: Horizontal Split Strip (Single ultra-thin bar)
+    /// - Option C: Minimal Numbers + Closing Threat Meter Bar
+    /// </summary>
+    public class RelativeGapForm : Form
+    {
+        private const int GWL_EXSTYLE = -20;
+        private const int WS_EX_LAYERED = 0x80000;
+        private const int WS_EX_TRANSPARENT = 0x20;
+        private const int WS_EX_TOPMOST = 0x00000008;
+        private const int WM_DPICHANGED = 0x02E0;
+        private const int WM_NCLBUTTONDOWN = 0x00A1;
+        private const int HT_CAPTION = 0x02;
+
+        [DllImport("user32.dll")]
+        private static extern int GetWindowLong(IntPtr hwnd, int index);
+
+        [DllImport("user32.dll")]
+        private static extern int SetWindowLong(IntPtr hwnd, int index, int newStyle);
+
+        [DllImport("user32.dll")]
+        private static extern bool ReleaseCapture();
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int Msg, int wParam, int lParam);
+
+        private readonly OverlaySettings _settings;
+        private SessionSnapshot _snapshot;
+        private float _dpiScale = 1.0f;
+
+        private bool _isHovered = false;
+        private CornerDragMode _cornerMode = CornerDragMode.ResizeWindow;
+        private DragCorner _activeDragCorner = DragCorner.None;
+        private Point _dragStartScreenPt;
+        private Rectangle _dragStartBounds;
+        private float _dragStartFontScale = 1.0f;
+        private Rectangle _rectCornerModeBtn;
+
+        private float _cachedFontScale = -1f;
+        private Font _fLabel;
+        private Font _fBadge;
+        private Font _fValue;
+        private Font _fIconAa;
+        private readonly StringFormat _leftFmt = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
+        private readonly StringFormat _rightFmt = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center };
+        private readonly StringFormat _centerFmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+
+        public Action OnSettingsMutated;
+
+        public RelativeGapForm(OverlaySettings settings, SessionSnapshot initialSnapshot)
+        {
+            _settings = settings;
+            _snapshot = initialSnapshot;
+            Text = "Free Overlay - Relative Gap";
+            AutoScaleMode = AutoScaleMode.None;
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.Manual;
+            TopMost = true;
+            ShowInTaskbar = false;
+            DoubleBuffered = true;
+            BackColor = Color.FromArgb(11, 15, 22);
+            Opacity = _settings.RelativeGapOpacity;
+
+            _dpiScale = DpiHelper.GetScale(IntPtr.Zero);
+            int savedX = _settings.RelativeGapX;
+            int savedY = _settings.RelativeGapY;
+            int savedW = _settings.RelativeGapW;
+            int savedH = _settings.RelativeGapH;
+
+            ResetPositionAndSize(false);
+
+            if (savedW >= 120 && savedH >= 34)
+            {
+                Width = savedW;
+                Height = savedH;
+            }
+            if (savedX > -9000 && savedY > -9000)
+            {
+                Location = new Point(savedX, savedY);
+            }
+            SaveGeometry();
+        }
+
+        private float EffectiveScale
+        {
+            get { return _dpiScale * _settings.RelativeGapFontScale; }
+        }
+
+        private void EnsureFonts(float s, float fs)
+        {
+            float key = s * 100f + fs;
+            if (Math.Abs(_cachedFontScale - key) < 0.001f && _fValue != null) return;
+            DisposeFonts();
+            _cachedFontScale = key;
+            _fLabel = new Font("Segoe UI", 10.5f * s * fs, FontStyle.Bold, GraphicsUnit.Pixel);
+            _fBadge = new Font("Segoe UI", 9.0f * s * fs, FontStyle.Bold, GraphicsUnit.Pixel);
+            _fValue = new Font("Consolas", 17.5f * s * fs, FontStyle.Bold, GraphicsUnit.Pixel);
+            _fIconAa = new Font("Segoe UI", 11.0f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+        }
+
+        private void DisposeFonts()
+        {
+            if (_fLabel != null) { _fLabel.Dispose(); _fLabel = null; }
+            if (_fBadge != null) { _fBadge.Dispose(); _fBadge = null; }
+            if (_fValue != null) { _fValue.Dispose(); _fValue = null; }
+            if (_fIconAa != null) { _fIconAa.Dispose(); _fIconAa = null; }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) DisposeFonts();
+            base.Dispose(disposing);
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            _dpiScale = DpiHelper.GetScale(Handle);
+            ApplySettingsState();
+        }
+
+        public void SaveGeometry()
+        {
+            _settings.RelativeGapX = Left;
+            _settings.RelativeGapY = Top;
+            _settings.RelativeGapW = Width;
+            _settings.RelativeGapH = Height;
+        }
+
+        protected override void OnMove(EventArgs e)
+        {
+            base.OnMove(e);
+            if (IsHandleCreated) SaveGeometry();
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            if (IsHandleCreated) SaveGeometry();
+        }
+
+        public void ResetPositionAndSize(bool notify)
+        {
+            float s = EffectiveScale;
+            if (_settings.RelativeGapStyle == RelativeGapLayoutStyle.OptionB_HorizontalStrip)
+            {
+                Width = (int)Math.Round(276 * s);
+                Height = (int)Math.Round(44 * s);
+            }
+            else if (_settings.RelativeGapStyle == RelativeGapLayoutStyle.OptionC_MinimalThreatBar)
+            {
+                Width = (int)Math.Round(214 * s);
+                Height = (int)Math.Round(78 * s);
+            }
+            else
+            {
+                Width = (int)Math.Round(210 * s);
+                Height = (int)Math.Round(72 * s);
+            }
+            Rectangle screen = Screen.PrimaryScreen.WorkingArea;
+            int x = screen.Left + (screen.Width - Width) / 2 + (int)Math.Round(340 * _dpiScale);
+            int y = screen.Top + (int)Math.Round(135 * _dpiScale);
+            Location = new Point(x, y);
+            SaveGeometry();
+            if (notify) _settings.NotifyChanged();
+            Invalidate();
+        }
+
+        public void AdjustWindowToMatchStyle(bool notify)
+        {
+            float s = EffectiveScale;
+            if (_settings.RelativeGapStyle == RelativeGapLayoutStyle.OptionB_HorizontalStrip)
+            {
+                Width = (int)Math.Round(276 * s);
+                Height = (int)Math.Round(44 * s);
+            }
+            else if (_settings.RelativeGapStyle == RelativeGapLayoutStyle.OptionC_MinimalThreatBar)
+            {
+                Width = (int)Math.Round(214 * s);
+                Height = (int)Math.Round(78 * s);
+            }
+            else
+            {
+                Width = (int)Math.Round(210 * s);
+                Height = (int)Math.Round(72 * s);
+            }
+            SaveGeometry();
+            if (notify) _settings.NotifyChanged();
+            Invalidate();
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_DPICHANGED)
+            {
+                int newDpi = m.WParam.ToInt32() & 0xFFFF;
+                if (newDpi > 0) _dpiScale = newDpi / 96.0f;
+                Invalidate();
+            }
+            base.WndProc(ref m);
+        }
+
+        public void ApplySettingsState()
+        {
+            if (!IsHandleCreated) return;
+            int ex = GetWindowLong(Handle, GWL_EXSTYLE);
+            ex |= WS_EX_LAYERED | WS_EX_TOPMOST;
+            if (_settings.Locked)
+            {
+                ex |= WS_EX_TRANSPARENT;
+                _isHovered = false;
+            }
+            else
+            {
+                ex &= ~WS_EX_TRANSPARENT;
+            }
+            SetWindowLong(Handle, GWL_EXSTYLE, ex);
+            TopMost = true;
+            Opacity = _settings.RelativeGapOpacity;
+            Invalidate();
+        }
+
+        public void UpdateSnapshot(SessionSnapshot snap)
+        {
+            _snapshot = snap;
+            if (!_settings.Locked && _activeDragCorner == DragCorner.None)
+            {
+                bool inside = Bounds.Contains(Cursor.Position);
+                if (inside != _isHovered) _isHovered = inside;
+            }
+            Invalidate();
+        }
+
+        private DragCorner HitTestCorner(Point pt)
+        {
+            int grip = Math.Max(14, (int)Math.Round(16 * _dpiScale));
+            bool left = pt.X <= grip;
+            bool right = pt.X >= Width - grip;
+            bool top = pt.Y <= grip;
+            bool bottom = pt.Y >= Height - grip;
+
+            if (top && right)
+            {
+                if (_rectCornerModeBtn.Contains(pt)) return DragCorner.None;
+                int edge = Math.Max(7, (int)Math.Round(8 * _dpiScale));
+                if (pt.X >= Width - edge && pt.Y <= edge) return DragCorner.TopRight;
+                return DragCorner.None;
+            }
+            if (bottom && right) return DragCorner.BottomRight;
+            if (bottom && left) return DragCorner.BottomLeft;
+            if (top && left) return DragCorner.TopLeft;
+            return DragCorner.None;
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (_settings.Locked || e.Button != MouseButtons.Left) return;
+
+            if (_isHovered && _rectCornerModeBtn.Contains(e.Location))
+            {
+                _cornerMode = (_cornerMode == CornerDragMode.ResizeWindow)
+                    ? CornerDragMode.ChangeFontSize
+                    : CornerDragMode.ResizeWindow;
+                Invalidate();
+                return;
+            }
+
+            DragCorner corner = HitTestCorner(e.Location);
+            if (corner != DragCorner.None)
+            {
+                _activeDragCorner = corner;
+                _dragStartScreenPt = Cursor.Position;
+                _dragStartBounds = Bounds;
+                _dragStartFontScale = _settings.RelativeGapFontScale;
+                Capture = true;
+                return;
+            }
+
+            ReleaseCapture();
+            SendMessage(Handle, WM_NCLBUTTONDOWN, HT_CAPTION, 0);
+            SaveGeometry();
+            _settings.Save();
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (_settings.Locked) return;
+
+            if (!_isHovered) { _isHovered = true; Invalidate(); }
+
+            if (_activeDragCorner != DragCorner.None)
+            {
+                Point curScreen = Cursor.Position;
+                int dx = curScreen.X - _dragStartScreenPt.X;
+                int dy = curScreen.Y - _dragStartScreenPt.Y;
+
+                if (_cornerMode == CornerDragMode.ChangeFontSize)
+                {
+                    int outward = 0;
+                    if (_activeDragCorner == DragCorner.BottomRight) outward = dx + dy;
+                    else if (_activeDragCorner == DragCorner.BottomLeft) outward = -dx + dy;
+                    else if (_activeDragCorner == DragCorner.TopRight) outward = dx - dy;
+                    else if (_activeDragCorner == DragCorner.TopLeft) outward = -dx - dy;
+
+                    float nextScale = Math.Max(0.65f, Math.Min(1.75f, _dragStartFontScale + (outward / 180.0f)));
+                    _settings.RelativeGapFontScale = nextScale;
+                    SaveGeometry();
+                    Invalidate();
+                }
+                else
+                {
+                    int minW = (int)Math.Round(150 * _dpiScale);
+                    int minH = (int)Math.Round(36 * _dpiScale);
+                    int newX = _dragStartBounds.X;
+                    int newY = _dragStartBounds.Y;
+                    int newW = _dragStartBounds.Width;
+                    int newH = _dragStartBounds.Height;
+
+                    if (_activeDragCorner == DragCorner.BottomRight || _activeDragCorner == DragCorner.TopRight)
+                        newW = Math.Max(minW, _dragStartBounds.Width + dx);
+                    else if (_activeDragCorner == DragCorner.BottomLeft || _activeDragCorner == DragCorner.TopLeft)
+                    {
+                        newW = Math.Max(minW, _dragStartBounds.Width - dx);
+                        newX = _dragStartBounds.Right - newW;
+                    }
+
+                    if (_activeDragCorner == DragCorner.BottomRight || _activeDragCorner == DragCorner.BottomLeft)
+                        newH = Math.Max(minH, _dragStartBounds.Height + dy);
+                    else if (_activeDragCorner == DragCorner.TopRight || _activeDragCorner == DragCorner.TopLeft)
+                    {
+                        newH = Math.Max(minH, _dragStartBounds.Height - dy);
+                        newY = _dragStartBounds.Bottom - newH;
+                    }
+
+                    Bounds = new Rectangle(newX, newY, newW, newH);
+                    SaveGeometry();
+                    Invalidate();
+                }
+                return;
+            }
+
+            DragCorner hc = HitTestCorner(e.Location);
+            if (hc == DragCorner.TopLeft || hc == DragCorner.BottomRight) Cursor = Cursors.SizeNWSE;
+            else if (hc == DragCorner.TopRight || hc == DragCorner.BottomLeft) Cursor = Cursors.SizeNESW;
+            else if (_rectCornerModeBtn.Contains(e.Location)) Cursor = Cursors.Hand;
+            else Cursor = Cursors.SizeAll;
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (_activeDragCorner != DragCorner.None)
+            {
+                _activeDragCorner = DragCorner.None;
+                Capture = false;
+                SaveGeometry();
+                _settings.NotifyChanged();
+                Invalidate();
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+
+            float s = _dpiScale;
+            float fs = _settings.RelativeGapFontScale;
+            EnsureFonts(s, fs);
+
+            using (SolidBrush bg = new SolidBrush(Color.FromArgb(11, 15, 22)))
+            {
+                g.FillRectangle(bg, 0, 0, Width, Height);
+            }
+
+            float gapAhead = (_snapshot != null && _snapshot.Connected) ? _snapshot.GapAheadSec : 0f;
+            float gapBehind = (_snapshot != null && _snapshot.Connected) ? _snapshot.GapBehindSec : 0f;
+            float closingRate = (_snapshot != null && _snapshot.Connected) ? _snapshot.BehindClosingRateSecPerSec : 0f;
+
+            int threat = 0;
+            if (_settings.RelativeOvertakeAlert && _snapshot != null && _snapshot.Connected)
+            {
+                if (gapBehind > 0f && gapBehind <= _settings.RelativeOvertakeThresholdSec && (closingRate >= 0.08f || _snapshot.BehindThreatLevel >= 2))
+                    threat = 2; // Overtake attack
+                else if (gapBehind > 0f && gapBehind <= _settings.RelativeOvertakeThresholdSec * 2.2f && (closingRate >= 0.10f || _snapshot.BehindThreatLevel == 1))
+                    threat = 1; // Closing in draft
+            }
+
+            string aheadStr = gapAhead > 0.005f
+                ? string.Format(CultureInfo.InvariantCulture, "+{0:0.00}s", gapAhead)
+                : "---";
+            string behindStr = gapBehind > 0.005f
+                ? string.Format(CultureInfo.InvariantCulture, "-{0:0.00}s", gapBehind)
+                : "---";
+
+            // Muted minimalist palette
+            Color colLabel = Color.FromArgb(100, 116, 139);
+            Color colAheadVal = Color.FromArgb(226, 232, 240);
+            Color colBehindVal = threat == 2
+                ? Color.FromArgb(248, 113, 113)
+                : (threat == 1 ? Color.FromArgb(251, 191, 36) : Color.FromArgb(148, 163, 184));
+
+            int pad = (int)Math.Round(10 * s);
+
+            if (_settings.RelativeGapStyle == RelativeGapLayoutStyle.OptionB_HorizontalStrip)
+            {
+                // ===============================================================
+                // OPTION B: HORIZONTAL SPLIT STRIP (AHD +1.42s | BHD -0.21s)
+                // ===============================================================
+                int midX = Width / 2;
+                Rectangle leftHalf = new Rectangle(0, 0, midX, Height);
+                Rectangle rightHalf = new Rectangle(midX, 0, Width - midX, Height);
+
+                if (threat == 2)
+                {
+                    using (SolidBrush tb = new SolidBrush(Color.FromArgb(42, 239, 68, 68)))
+                        g.FillRectangle(tb, rightHalf);
+                }
+                else if (threat == 1)
+                {
+                    using (SolidBrush tb = new SolidBrush(Color.FromArgb(30, 245, 158, 11)))
+                        g.FillRectangle(tb, rightHalf);
+                }
+
+                using (Pen divP = new Pen(Color.FromArgb(32, 255, 255, 255), 1f))
+                {
+                    g.DrawLine(divP, midX, (int)(6 * s), midX, Height - (int)(6 * s));
+                }
+
+                using (SolidBrush lb = new SolidBrush(colLabel))
+                {
+                    g.DrawString("AHD", _fLabel, lb, new RectangleF(pad, 0, midX * 0.45f, Height), _leftFmt);
+                    Color bLblCol = threat == 2 ? Color.FromArgb(252, 165, 165) : (threat == 1 ? Color.FromArgb(253, 224, 71) : colLabel);
+                    using (SolidBrush blb = new SolidBrush(bLblCol))
+                        g.DrawString(threat == 2 ? "ATK" : "BHD", _fLabel, blb, new RectangleF(midX + pad * 0.8f, 0, (Width - midX) * 0.45f, Height), _leftFmt);
+                }
+
+                using (SolidBrush avb = new SolidBrush(colAheadVal))
+                    g.DrawString(aheadStr, _fValue, avb, new RectangleF(pad, 0, midX - pad * 1.8f, Height), _rightFmt);
+
+                using (SolidBrush bvb = new SolidBrush(colBehindVal))
+                    g.DrawString(behindStr, _fValue, bvb, new RectangleF(midX, 0, Width - midX - pad, Height), _rightFmt);
+            }
+            else if (_settings.RelativeGapStyle == RelativeGapLayoutStyle.OptionC_MinimalThreatBar)
+            {
+                // ===============================================================
+                // OPTION C: MINIMAL NUMBERS + CLOSING THREAT METER BAR
+                // ===============================================================
+                int barH = Math.Max(3, (int)Math.Round(4 * s));
+                int midY = Height / 2;
+                Rectangle topRow = new Rectangle(pad, (int)(2 * s), Width - pad * 2, midY - barH - (int)(2 * s));
+                Rectangle barTrack = new Rectangle(pad, midY - barH / 2, Width - pad * 2, barH);
+                Rectangle botRow = new Rectangle(pad, midY + barH / 2 + (int)(2 * s), Width - pad * 2, Height - (midY + barH / 2 + (int)(4 * s)));
+
+                using (SolidBrush lb = new SolidBrush(colLabel))
+                    g.DrawString("AHEAD", _fLabel, lb, topRow, _leftFmt);
+                using (SolidBrush avb = new SolidBrush(colAheadVal))
+                    g.DrawString(aheadStr, _fValue, avb, topRow, _rightFmt);
+
+                // Threat Meter Track
+                using (SolidBrush tbg = new SolidBrush(Color.FromArgb(25, 255, 255, 255)))
+                    g.FillRectangle(tbg, barTrack);
+
+                float fillRatio = 0.08f;
+                if (gapBehind > 0f && gapBehind < 2.0f)
+                {
+                    fillRatio = Math.Max(0.08f, Math.Min(1.0f, (2.0f - gapBehind) / 1.85f));
+                }
+                int fillW = (int)Math.Round(barTrack.Width * fillRatio);
+                Color barCol = threat == 2
+                    ? Color.FromArgb(220, 239, 68, 68)
+                    : (threat == 1 ? Color.FromArgb(210, 245, 158, 11) : Color.FromArgb(90, 148, 163, 184));
+                using (SolidBrush fb = new SolidBrush(barCol))
+                    g.FillRectangle(fb, barTrack.Left, barTrack.Top, fillW, barTrack.Height);
+
+                string botLabel = threat == 2 ? "OVERTAKE" : (threat == 1 ? "CLOSING" : "BEHIND");
+                Color botLblCol = threat == 2 ? Color.FromArgb(248, 113, 113) : (threat == 1 ? Color.FromArgb(251, 191, 36) : colLabel);
+                using (SolidBrush blb = new SolidBrush(botLblCol))
+                    g.DrawString(botLabel, _fLabel, blb, botRow, _leftFmt);
+                using (SolidBrush bvb = new SolidBrush(colBehindVal))
+                    g.DrawString(behindStr, _fValue, bvb, botRow, _rightFmt);
+            }
+            else
+            {
+                // ===============================================================
+                // OPTION A: STACKED SIGHTLINE PILL (Default)
+                // ===============================================================
+                int midY = Height / 2;
+                Rectangle topRow = new Rectangle(0, 0, Width, midY);
+                Rectangle botRow = new Rectangle(0, midY, Width, Height - midY);
+
+                if (threat == 2)
+                {
+                    using (SolidBrush tb = new SolidBrush(Color.FromArgb(40, 239, 68, 68)))
+                        g.FillRectangle(tb, botRow);
+                    using (SolidBrush stripB = new SolidBrush(Color.FromArgb(239, 68, 68)))
+                        g.FillRectangle(stripB, 0, midY, Math.Max(3, (int)Math.Round(3 * s)), Height - midY);
+                }
+                else if (threat == 1)
+                {
+                    using (SolidBrush tb = new SolidBrush(Color.FromArgb(28, 245, 158, 11)))
+                        g.FillRectangle(tb, botRow);
+                    using (SolidBrush stripB = new SolidBrush(Color.FromArgb(245, 158, 11)))
+                        g.FillRectangle(stripB, 0, midY, Math.Max(3, (int)Math.Round(3 * s)), Height - midY);
+                }
+
+                using (Pen divP = new Pen(Color.FromArgb(24, 255, 255, 255), 1f))
+                {
+                    g.DrawLine(divP, 0, midY, Width, midY);
+                }
+
+                Rectangle topTextR = new Rectangle(pad, 0, Width - pad * 2, midY);
+                Rectangle botTextR = new Rectangle(pad, midY, Width - pad * 2, Height - midY);
+
+                using (SolidBrush lb = new SolidBrush(colLabel))
+                    g.DrawString("AHEAD", _fLabel, lb, topTextR, _leftFmt);
+                using (SolidBrush avb = new SolidBrush(colAheadVal))
+                    g.DrawString(aheadStr, _fValue, avb, topTextR, _rightFmt);
+
+                Color bLblCol = threat == 2 ? Color.FromArgb(252, 165, 165) : (threat == 1 ? Color.FromArgb(253, 224, 71) : colLabel);
+                string bLblTxt = threat == 2 ? "BEHIND • ATK" : (threat == 1 ? "BEHIND • << " : "BEHIND");
+                using (SolidBrush blb = new SolidBrush(bLblCol))
+                    g.DrawString(bLblTxt, _fLabel, blb, botTextR, _leftFmt);
+                using (SolidBrush bvb = new SolidBrush(colBehindVal))
+                    g.DrawString(behindStr, _fValue, bvb, botTextR, _rightFmt);
+            }
+
+            if (_isHovered && !_settings.Locked)
+            {
+                int iconSz = Math.Max(18, (int)Math.Round(20 * s));
+                _rectCornerModeBtn = new Rectangle(
+                    Width - iconSz - (int)Math.Round(4 * s),
+                    (int)Math.Round(4 * s),
+                    iconSz,
+                    iconSz
+                );
+                DpiHelper.DrawCornerModeIconBtn(g, _fIconAa, _rectCornerModeBtn, _cornerMode == CornerDragMode.ResizeWindow, s);
+
+                Color activeAccent = _cornerMode == CornerDragMode.ResizeWindow
+                    ? Color.FromArgb(215, 56, 189, 248)
+                    : Color.FromArgb(215, 192, 132, 252);
+                using (Pen bp = new Pen(activeAccent, Math.Max(1.5f, 1.5f * s)))
+                    g.DrawRectangle(bp, 1, 1, Width - 2, Height - 2);
+                DpiHelper.DrawCornerGrips(g, Width, Height, activeAccent, s);
+            }
+            else
+            {
+                _rectCornerModeBtn = Rectangle.Empty;
+                Color borderCol = threat == 2
+                    ? Color.FromArgb(140, 239, 68, 68)
+                    : (threat == 1 ? Color.FromArgb(110, 245, 158, 11) : Color.FromArgb(38, 255, 255, 255));
+                using (Pen bp = new Pen(borderCol, 1.0f))
+                    g.DrawRectangle(bp, 0, 0, Width - 1, Height - 1);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Minimalist Car Overlap & Blindspot Radar Widget (Widget #5):
+    /// - 100% invisible when no cars are nearby (zero visual clutter on clear track).
+    /// - Flat, non-vibrant muted slate/amber/terracotta geometry (no radar circles, no glow, no text clutter).
+    /// Supports 3 minimalist variations:
+    /// - Option A: Minimal Top-Down Silhouette + Bumper Clearance Lines
+    /// - Option B: Parallel Longitudinal Overlap Strips (Default)
+    /// - Option C: Ultra-Minimal Blindspot Side Bars
+    /// </summary>
+    public class OverlapRadarForm : Form
+    {
+        private const int GWL_EXSTYLE = -20;
+        private const int WS_EX_LAYERED = 0x80000;
+        private const int WS_EX_TRANSPARENT = 0x20;
+        private const int WS_EX_TOPMOST = 0x00000008;
+        private const int WM_DPICHANGED = 0x02E0;
+        private const int WM_NCLBUTTONDOWN = 0x00A1;
+        private const int HT_CAPTION = 0x02;
+
+        [DllImport("user32.dll")]
+        private static extern int GetWindowLong(IntPtr hwnd, int index);
+
+        [DllImport("user32.dll")]
+        private static extern int SetWindowLong(IntPtr hwnd, int index, int newStyle);
+
+        [DllImport("user32.dll")]
+        private static extern bool ReleaseCapture();
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int Msg, int wParam, int lParam);
+
+        private readonly OverlaySettings _settings;
+        private SessionSnapshot _snapshot;
+        private float _dpiScale = 1.0f;
+
+        private bool _isHovered = false;
+        private CornerDragMode _cornerMode = CornerDragMode.ResizeWindow;
+        private DragCorner _activeDragCorner = DragCorner.None;
+        private Point _dragStartScreenPt;
+        private Rectangle _dragStartBounds;
+        private float _dragStartFontScale = 1.0f;
+        private Rectangle _rectCornerModeBtn;
+
+        private float _cachedFontScale = -1f;
+        private Font _fTiny;
+        private Font _fIconAa;
+        private readonly StringFormat _centerFmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+
+        public Action OnSettingsMutated;
+
+        public OverlapRadarForm(OverlaySettings settings, SessionSnapshot initialSnapshot)
+        {
+            _settings = settings;
+            _snapshot = initialSnapshot;
+            Text = "Free Overlay - Overlap Radar";
+            AutoScaleMode = AutoScaleMode.None;
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.Manual;
+            TopMost = true;
+            ShowInTaskbar = false;
+            DoubleBuffered = true;
+            BackColor = Color.FromArgb(11, 15, 22);
+            Opacity = _settings.RadarOpacity;
+
+            _dpiScale = DpiHelper.GetScale(IntPtr.Zero);
+            int savedX = _settings.RadarX;
+            int savedY = _settings.RadarY;
+            int savedW = _settings.RadarW;
+            int savedH = _settings.RadarH;
+
+            ResetPositionAndSize(false);
+
+            if (savedW >= 80 && savedH >= 32)
+            {
+                Width = savedW;
+                Height = savedH;
+            }
+            if (savedX > -9000 && savedY > -9000)
+            {
+                Location = new Point(savedX, savedY);
+            }
+            SaveGeometry();
+        }
+
+        private float EffectiveScale
+        {
+            get { return _dpiScale * _settings.RadarFontScale; }
+        }
+
+        private void EnsureFonts(float s, float fs)
+        {
+            float key = s * 100f + fs;
+            if (Math.Abs(_cachedFontScale - key) < 0.001f && _fTiny != null) return;
+            DisposeFonts();
+            _cachedFontScale = key;
+            _fTiny = new Font("Segoe UI", 9.5f * s * fs, FontStyle.Bold, GraphicsUnit.Pixel);
+            _fIconAa = new Font("Segoe UI", 11.0f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+        }
+
+        private void DisposeFonts()
+        {
+            if (_fTiny != null) { _fTiny.Dispose(); _fTiny = null; }
+            if (_fIconAa != null) { _fIconAa.Dispose(); _fIconAa = null; }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) DisposeFonts();
+            base.Dispose(disposing);
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            _dpiScale = DpiHelper.GetScale(Handle);
+            ApplySettingsState();
+        }
+
+        public void SaveGeometry()
+        {
+            _settings.RadarX = Left;
+            _settings.RadarY = Top;
+            _settings.RadarW = Width;
+            _settings.RadarH = Height;
+        }
+
+        protected override void OnMove(EventArgs e)
+        {
+            base.OnMove(e);
+            if (IsHandleCreated) SaveGeometry();
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            if (IsHandleCreated) SaveGeometry();
+        }
+
+        public void ResetPositionAndSize(bool notify)
+        {
+            float s = EffectiveScale;
+            if (_settings.RadarStyle == OverlapRadarLayoutStyle.OptionA_MinimalTopDown)
+            {
+                Width = (int)Math.Round(176 * s);
+                Height = (int)Math.Round(164 * s);
+            }
+            else if (_settings.RadarStyle == OverlapRadarLayoutStyle.OptionC_SubtleSideBars)
+            {
+                Width = (int)Math.Round(216 * s);
+                Height = (int)Math.Round(48 * s);
+            }
+            else
+            {
+                Width = (int)Math.Round(148 * s);
+                Height = (int)Math.Round(156 * s);
+            }
+            Rectangle screen = Screen.PrimaryScreen.WorkingArea;
+            int x = screen.Left + (screen.Width - Width) / 2;
+            int y = screen.Top + (int)Math.Round(240 * _dpiScale);
+            Location = new Point(x, y);
+            SaveGeometry();
+            if (notify) _settings.NotifyChanged();
+            Invalidate();
+        }
+
+        public void AdjustWindowToMatchStyle(bool notify)
+        {
+            float s = EffectiveScale;
+            if (_settings.RadarStyle == OverlapRadarLayoutStyle.OptionA_MinimalTopDown)
+            {
+                Width = (int)Math.Round(176 * s);
+                Height = (int)Math.Round(164 * s);
+            }
+            else if (_settings.RadarStyle == OverlapRadarLayoutStyle.OptionC_SubtleSideBars)
+            {
+                Width = (int)Math.Round(216 * s);
+                Height = (int)Math.Round(48 * s);
+            }
+            else
+            {
+                Width = (int)Math.Round(148 * s);
+                Height = (int)Math.Round(156 * s);
+            }
+            SaveGeometry();
+            if (notify) _settings.NotifyChanged();
+            Invalidate();
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_DPICHANGED)
+            {
+                int newDpi = m.WParam.ToInt32() & 0xFFFF;
+                if (newDpi > 0) _dpiScale = newDpi / 96.0f;
+                Invalidate();
+            }
+            base.WndProc(ref m);
+        }
+
+        private bool HasActiveRadarTarget()
+        {
+            if (_snapshot == null || !_snapshot.Connected || !_snapshot.RadarHasNearbyCar)
+                return false;
+            float range = Math.Max(4.0f, _settings.RadarTriggerRangeMeters);
+            bool leftIn = _snapshot.RadarCarLeft && Math.Abs(_snapshot.RadarLeftLongitudinalMeters) <= range;
+            bool rightIn = _snapshot.RadarCarRight && Math.Abs(_snapshot.RadarRightLongitudinalMeters) <= range;
+            return leftIn || rightIn;
+        }
+
+        public void ApplySettingsState()
+        {
+            if (!IsHandleCreated) return;
+            int ex = GetWindowLong(Handle, GWL_EXSTYLE);
+            ex |= WS_EX_LAYERED | WS_EX_TOPMOST;
+            if (_settings.Locked)
+            {
+                ex |= WS_EX_TRANSPARENT;
+                _isHovered = false;
+            }
+            else
+            {
+                ex &= ~WS_EX_TRANSPARENT;
+            }
+            SetWindowLong(Handle, GWL_EXSTYLE, ex);
+            TopMost = true;
+            UpdateAutoHideOpacity();
+            Invalidate();
+        }
+
+        private bool UpdateAutoHideOpacity()
+        {
+            bool shouldBeVisible = !_settings.Locked || HasActiveRadarTarget();
+            double targetOpacity = shouldBeVisible ? _settings.RadarOpacity : 0.0;
+            if (Math.Abs(Opacity - targetOpacity) > 0.01)
+            {
+                Opacity = targetOpacity;
+            }
+            return shouldBeVisible;
+        }
+
+        public void UpdateSnapshot(SessionSnapshot snap)
+        {
+            _snapshot = snap;
+            if (!_settings.Locked && _activeDragCorner == DragCorner.None)
+            {
+                bool inside = Bounds.Contains(Cursor.Position);
+                if (inside != _isHovered) _isHovered = inside;
+            }
+            bool visible = UpdateAutoHideOpacity();
+            if (visible)
+            {
+                Invalidate();
+            }
+        }
+
+        private DragCorner HitTestCorner(Point pt)
+        {
+            int grip = Math.Max(14, (int)Math.Round(16 * _dpiScale));
+            bool left = pt.X <= grip;
+            bool right = pt.X >= Width - grip;
+            bool top = pt.Y <= grip;
+            bool bottom = pt.Y >= Height - grip;
+
+            if (top && right)
+            {
+                if (_rectCornerModeBtn.Contains(pt)) return DragCorner.None;
+                int edge = Math.Max(7, (int)Math.Round(8 * _dpiScale));
+                if (pt.X >= Width - edge && pt.Y <= edge) return DragCorner.TopRight;
+                return DragCorner.None;
+            }
+            if (bottom && right) return DragCorner.BottomRight;
+            if (bottom && left) return DragCorner.BottomLeft;
+            if (top && left) return DragCorner.TopLeft;
+            return DragCorner.None;
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (_settings.Locked || e.Button != MouseButtons.Left) return;
+
+            if (_isHovered && _rectCornerModeBtn.Contains(e.Location))
+            {
+                _cornerMode = (_cornerMode == CornerDragMode.ResizeWindow)
+                    ? CornerDragMode.ChangeFontSize
+                    : CornerDragMode.ResizeWindow;
+                Invalidate();
+                return;
+            }
+
+            DragCorner corner = HitTestCorner(e.Location);
+            if (corner != DragCorner.None)
+            {
+                _activeDragCorner = corner;
+                _dragStartScreenPt = Cursor.Position;
+                _dragStartBounds = Bounds;
+                _dragStartFontScale = _settings.RadarFontScale;
+                Capture = true;
+                return;
+            }
+
+            ReleaseCapture();
+            SendMessage(Handle, WM_NCLBUTTONDOWN, HT_CAPTION, 0);
+            SaveGeometry();
+            _settings.Save();
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (_settings.Locked) return;
+
+            if (!_isHovered) { _isHovered = true; Invalidate(); }
+
+            if (_activeDragCorner != DragCorner.None)
+            {
+                Point curScreen = Cursor.Position;
+                int dx = curScreen.X - _dragStartScreenPt.X;
+                int dy = curScreen.Y - _dragStartScreenPt.Y;
+
+                if (_cornerMode == CornerDragMode.ChangeFontSize)
+                {
+                    int outward = 0;
+                    if (_activeDragCorner == DragCorner.BottomRight) outward = dx + dy;
+                    else if (_activeDragCorner == DragCorner.BottomLeft) outward = -dx + dy;
+                    else if (_activeDragCorner == DragCorner.TopRight) outward = dx - dy;
+                    else if (_activeDragCorner == DragCorner.TopLeft) outward = -dx - dy;
+
+                    float nextScale = Math.Max(0.65f, Math.Min(1.75f, _dragStartFontScale + (outward / 180.0f)));
+                    _settings.RadarFontScale = nextScale;
+                    SaveGeometry();
+                    Invalidate();
+                }
+                else
+                {
+                    int minW = (int)Math.Round(110 * _dpiScale);
+                    int minH = (int)Math.Round(38 * _dpiScale);
+                    int newX = _dragStartBounds.X;
+                    int newY = _dragStartBounds.Y;
+                    int newW = _dragStartBounds.Width;
+                    int newH = _dragStartBounds.Height;
+
+                    if (_activeDragCorner == DragCorner.BottomRight || _activeDragCorner == DragCorner.TopRight)
+                        newW = Math.Max(minW, _dragStartBounds.Width + dx);
+                    else if (_activeDragCorner == DragCorner.BottomLeft || _activeDragCorner == DragCorner.TopLeft)
+                    {
+                        newW = Math.Max(minW, _dragStartBounds.Width - dx);
+                        newX = _dragStartBounds.Right - newW;
+                    }
+
+                    if (_activeDragCorner == DragCorner.BottomRight || _activeDragCorner == DragCorner.BottomLeft)
+                        newH = Math.Max(minH, _dragStartBounds.Height + dy);
+                    else if (_activeDragCorner == DragCorner.TopRight || _activeDragCorner == DragCorner.TopLeft)
+                    {
+                        newH = Math.Max(minH, _dragStartBounds.Height - dy);
+                        newY = _dragStartBounds.Bottom - newH;
+                    }
+
+                    Bounds = new Rectangle(newX, newY, newW, newH);
+                    SaveGeometry();
+                    Invalidate();
+                }
+                return;
+            }
+
+            DragCorner hc = HitTestCorner(e.Location);
+            if (hc == DragCorner.TopLeft || hc == DragCorner.BottomRight) Cursor = Cursors.SizeNWSE;
+            else if (hc == DragCorner.TopRight || hc == DragCorner.BottomLeft) Cursor = Cursors.SizeNESW;
+            else if (_rectCornerModeBtn.Contains(e.Location)) Cursor = Cursors.Hand;
+            else Cursor = Cursors.SizeAll;
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (_activeDragCorner != DragCorner.None)
+            {
+                _activeDragCorner = DragCorner.None;
+                Capture = false;
+                SaveGeometry();
+                _settings.NotifyChanged();
+                Invalidate();
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            bool activeTarget = HasActiveRadarTarget();
+            if (_settings.Locked && !activeTarget)
+            {
+                return; // 100% invisible when locked and no cars are nearby
+            }
+
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+
+            float s = _dpiScale;
+            float fs = _settings.RadarFontScale;
+            EnsureFonts(s, fs);
+
+            using (SolidBrush bg = new SolidBrush(Color.FromArgb(11, 15, 22)))
+            {
+                g.FillRectangle(bg, 0, 0, Width, Height);
+            }
+
+            float triggerRange = Math.Max(5.0f, _settings.RadarTriggerRangeMeters);
+            float carLen = Math.Max(3.5f, _settings.RadarCarLengthMeters);
+            float overlapThreshold = carLen * 0.88f;
+
+            bool hasLeft = activeTarget && _snapshot.RadarCarLeft && Math.Abs(_snapshot.RadarLeftLongitudinalMeters) <= triggerRange;
+            bool hasRight = activeTarget && _snapshot.RadarCarRight && Math.Abs(_snapshot.RadarRightLongitudinalMeters) <= triggerRange;
+            float leftLong = hasLeft ? _snapshot.RadarLeftLongitudinalMeters : -1.2f;
+            float rightLong = hasRight ? _snapshot.RadarRightLongitudinalMeters : 99f;
+
+            // When unlocked and no live car is nearby, show a subtle ghost sample on left so user sees layout while positioning
+            bool isGhostPreview = !activeTarget && !_settings.Locked;
+            if (isGhostPreview)
+            {
+                hasLeft = true;
+                leftLong = -1.1f;
+            }
+
+            bool leftOverlap = hasLeft && Math.Abs(leftLong) <= overlapThreshold;
+            bool rightOverlap = hasRight && Math.Abs(rightLong) <= overlapThreshold;
+
+            // Muted, non-vibrant colors
+            Color selfFill = Color.FromArgb(40, 148, 163, 184);
+            Color selfBorder = Color.FromArgb(115, 148, 163, 184);
+            Color clearanceLineCol = (leftOverlap || rightOverlap)
+                ? Color.FromArgb(95, 210, 95, 95)
+                : Color.FromArgb(45, 148, 163, 184);
+
+            if (_settings.RadarStyle == OverlapRadarLayoutStyle.OptionC_SubtleSideBars)
+            {
+                // ===============================================================
+                // OPTION C: ULTRA-MINIMAL BLINDSPOT SIDE BARS
+                // ===============================================================
+                int padX = (int)Math.Round(10 * s);
+                int padY = (int)Math.Round(9 * s);
+                int pillW = (Width - padX * 3) / 2;
+                int pillH = Math.Max(16, Height - padY * 2);
+
+                Rectangle leftPill = new Rectangle(padX, padY, pillW, pillH);
+                Rectangle rightPill = new Rectangle(padX * 2 + pillW, padY, Width - (padX * 3 + pillW), pillH);
+
+                // Left Pill
+                Color lBg = hasLeft
+                    ? (leftOverlap ? Color.FromArgb(65, 210, 95, 95) : Color.FromArgb(50, 217, 160, 91))
+                    : Color.FromArgb(16, 255, 255, 255);
+                Color lBorder = hasLeft
+                    ? (leftOverlap ? Color.FromArgb(185, 226, 118, 118) : Color.FromArgb(150, 217, 160, 91))
+                    : Color.FromArgb(30, 255, 255, 255);
+                using (SolidBrush b = new SolidBrush(lBg)) g.FillRectangle(b, leftPill);
+                using (Pen p = new Pen(lBorder, 1f)) g.DrawRectangle(p, leftPill);
+                if (hasLeft)
+                {
+                    int barW = Math.Max(3, (int)Math.Round(4 * s));
+                    using (SolidBrush sb = new SolidBrush(lBorder))
+                        g.FillRectangle(sb, leftPill.Left, leftPill.Top, barW, leftPill.Height);
+                }
+                using (SolidBrush tb = new SolidBrush(hasLeft ? Color.FromArgb(226, 232, 240) : Color.FromArgb(75, 148, 163, 184)))
+                {
+                    string lTxt = hasLeft ? (leftOverlap ? "LEFT" : "L • APP") : "CLEAR";
+                    g.DrawString(lTxt, _fTiny, tb, leftPill, _centerFmt);
+                }
+
+                // Right Pill
+                Color rBg = hasRight
+                    ? (rightOverlap ? Color.FromArgb(65, 210, 95, 95) : Color.FromArgb(50, 217, 160, 91))
+                    : Color.FromArgb(16, 255, 255, 255);
+                Color rBorder = hasRight
+                    ? (rightOverlap ? Color.FromArgb(185, 226, 118, 118) : Color.FromArgb(150, 217, 160, 91))
+                    : Color.FromArgb(30, 255, 255, 255);
+                using (SolidBrush b = new SolidBrush(rBg)) g.FillRectangle(b, rightPill);
+                using (Pen p = new Pen(rBorder, 1f)) g.DrawRectangle(p, rightPill);
+                if (hasRight)
+                {
+                    int barW = Math.Max(3, (int)Math.Round(4 * s));
+                    using (SolidBrush sb = new SolidBrush(rBorder))
+                        g.FillRectangle(sb, rightPill.Right - barW, rightPill.Top, barW, rightPill.Height);
+                }
+                using (SolidBrush tb = new SolidBrush(hasRight ? Color.FromArgb(226, 232, 240) : Color.FromArgb(75, 148, 163, 184)))
+                {
+                    string rTxt = hasRight ? (rightOverlap ? "RIGHT" : "R • APP") : "CLEAR";
+                    g.DrawString(rTxt, _fTiny, tb, rightPill, _centerFmt);
+                }
+            }
+            else if (_settings.RadarStyle == OverlapRadarLayoutStyle.OptionA_MinimalTopDown)
+            {
+                // ===============================================================
+                // OPTION A: MINIMAL TOP-DOWN SILHOUETTE + BUMPER LINES
+                // ===============================================================
+                int cx = Width / 2;
+                int cy = Height / 2;
+                int carW = Math.Max(18, (int)Math.Round(Width * 0.16f));
+                int carH = Math.Max(36, (int)Math.Round(Height * 0.36f));
+                float pxPerMeter = carH / carLen;
+
+                Rectangle selfRect = new Rectangle(cx - carW / 2, cy - carH / 2, carW, carH);
+
+                // Horizontal Front & Rear Bumper Clearance Lines
+                int lineMargin = (int)Math.Round(16 * s);
+                using (Pen clPen = new Pen(clearanceLineCol, 1f))
+                {
+                    clPen.DashStyle = DashStyle.Dash;
+                    g.DrawLine(clPen, lineMargin, selfRect.Top, Width - lineMargin, selfRect.Top);
+                    g.DrawLine(clPen, lineMargin, selfRect.Bottom, Width - lineMargin, selfRect.Bottom);
+                }
+
+                // Self Car Silhouette
+                using (SolidBrush sb = new SolidBrush(selfFill)) g.FillRectangle(sb, selfRect);
+                using (Pen sp = new Pen(selfBorder, 1.2f)) g.DrawRectangle(sp, selfRect);
+
+                // Subtle windshield notch inside self car
+                int wsH = Math.Max(4, carH / 5);
+                Rectangle wsRect = new Rectangle(selfRect.Left + 3, selfRect.Top + 4, Math.Max(4, selfRect.Width - 6), wsH);
+                using (SolidBrush wb = new SolidBrush(Color.FromArgb(40, 255, 255, 255))) g.FillRectangle(wb, wsRect);
+
+                int laneOffset = (int)Math.Round(carW * 1.65f);
+
+                if (hasLeft)
+                {
+                    int oppCenterY = cy - (int)Math.Round(leftLong * pxPerMeter);
+                    int oppTop = Math.Max((int)(6 * s), Math.Min(Height - carH - (int)(6 * s), oppCenterY - carH / 2));
+                    Rectangle oppRect = new Rectangle(cx - laneOffset - carW / 2, oppTop, carW, carH);
+
+                    Color fillC = leftOverlap ? Color.FromArgb(145, 210, 95, 95) : Color.FromArgb(130, 217, 160, 91);
+                    Color bordC = leftOverlap ? Color.FromArgb(225, 226, 118, 118) : Color.FromArgb(200, 217, 160, 91);
+                    using (SolidBrush ob = new SolidBrush(fillC)) g.FillRectangle(ob, oppRect);
+                    using (Pen op = new Pen(bordC, 1.2f)) g.DrawRectangle(op, oppRect);
+                }
+
+                if (hasRight)
+                {
+                    int oppCenterY = cy - (int)Math.Round(rightLong * pxPerMeter);
+                    int oppTop = Math.Max((int)(6 * s), Math.Min(Height - carH - (int)(6 * s), oppCenterY - carH / 2));
+                    Rectangle oppRect = new Rectangle(cx + laneOffset - carW / 2, oppTop, carW, carH);
+
+                    Color fillC = rightOverlap ? Color.FromArgb(145, 210, 95, 95) : Color.FromArgb(130, 217, 160, 91);
+                    Color bordC = rightOverlap ? Color.FromArgb(225, 226, 118, 118) : Color.FromArgb(200, 217, 160, 91);
+                    using (SolidBrush ob = new SolidBrush(fillC)) g.FillRectangle(ob, oppRect);
+                    using (Pen op = new Pen(bordC, 1.2f)) g.DrawRectangle(op, oppRect);
+                }
+            }
+            else
+            {
+                // ===============================================================
+                // OPTION B: PARALLEL LONGITUDINAL OVERLAP STRIPS (Default)
+                // ===============================================================
+                int cx = Width / 2;
+                int cy = Height / 2;
+                int padY = (int)Math.Round(14 * s);
+                int trackH = Math.Max(40, Height - padY * 2);
+                int stripW = Math.Max(10, (int)Math.Round(13 * s));
+                int selfW = Math.Max(14, (int)Math.Round(18 * s));
+                int selfH = Math.Max(34, (int)Math.Round(trackH * 0.40f));
+                float pxPerMeter = selfH / carLen;
+
+                int stripGap = (int)Math.Round(18 * s);
+                Rectangle selfRect = new Rectangle(cx - selfW / 2, cy - selfH / 2, selfW, selfH);
+                Rectangle leftTrack = new Rectangle(selfRect.Left - stripGap - stripW, padY, stripW, trackH);
+                Rectangle rightTrack = new Rectangle(selfRect.Right + stripGap, padY, stripW, trackH);
+
+                // Horizontal Front & Rear Bumper Reference Lines
+                using (Pen clPen = new Pen(clearanceLineCol, 1f))
+                {
+                    g.DrawLine(clPen, leftTrack.Left - (int)(4 * s), selfRect.Top, rightTrack.Right + (int)(4 * s), selfRect.Top);
+                    g.DrawLine(clPen, leftTrack.Left - (int)(4 * s), selfRect.Bottom, rightTrack.Right + (int)(4 * s), selfRect.Bottom);
+                }
+
+                // Track slots
+                using (SolidBrush tbg = new SolidBrush(Color.FromArgb(18, 255, 255, 255)))
+                {
+                    g.FillRectangle(tbg, leftTrack);
+                    g.FillRectangle(tbg, rightTrack);
+                }
+                using (Pen tp = new Pen(Color.FromArgb(30, 255, 255, 255), 1f))
+                {
+                    g.DrawRectangle(tp, leftTrack);
+                    g.DrawRectangle(tp, rightTrack);
+                }
+
+                // Center Self Reference Bar
+                using (SolidBrush sb = new SolidBrush(selfFill)) g.FillRectangle(sb, selfRect);
+                using (Pen sp = new Pen(selfBorder, 1.2f)) g.DrawRectangle(sp, selfRect);
+
+                // Left Opponent Marker inside Left Strip
+                if (hasLeft)
+                {
+                    int oppCenterY = cy - (int)Math.Round(leftLong * pxPerMeter);
+                    int oppTop = Math.Max(leftTrack.Top + 1, Math.Min(leftTrack.Bottom - selfH - 1, oppCenterY - selfH / 2));
+                    Rectangle barR = new Rectangle(leftTrack.Left + 1, oppTop, leftTrack.Width - 2, selfH);
+                    Color fillC = leftOverlap ? Color.FromArgb(185, 210, 95, 95) : Color.FromArgb(165, 217, 160, 91);
+                    using (SolidBrush b = new SolidBrush(fillC)) g.FillRectangle(b, barR);
+                }
+
+                // Right Opponent Marker inside Right Strip
+                if (hasRight)
+                {
+                    int oppCenterY = cy - (int)Math.Round(rightLong * pxPerMeter);
+                    int oppTop = Math.Max(rightTrack.Top + 1, Math.Min(rightTrack.Bottom - selfH - 1, oppCenterY - selfH / 2));
+                    Rectangle barR = new Rectangle(rightTrack.Left + 1, oppTop, rightTrack.Width - 2, selfH);
+                    Color fillC = rightOverlap ? Color.FromArgb(185, 210, 95, 95) : Color.FromArgb(165, 217, 160, 91);
+                    using (SolidBrush b = new SolidBrush(fillC)) g.FillRectangle(b, barR);
+                }
+            }
+
+            if (isGhostPreview)
+            {
+                using (SolidBrush gb = new SolidBrush(Color.FromArgb(140, 148, 163, 184)))
+                {
+                    g.DrawString("AUTO-HIDE", _fTiny, gb, new RectangleF(0, Height - 16 * s, Width, 15 * s), _centerFmt);
+                }
+            }
+
+            if (_isHovered && !_settings.Locked)
+            {
+                int iconSz = Math.Max(18, (int)Math.Round(20 * s));
+                _rectCornerModeBtn = new Rectangle(
+                    Width - iconSz - (int)Math.Round(4 * s),
+                    (int)Math.Round(4 * s),
+                    iconSz,
+                    iconSz
+                );
+                DpiHelper.DrawCornerModeIconBtn(g, _fIconAa, _rectCornerModeBtn, _cornerMode == CornerDragMode.ResizeWindow, s);
+
+                Color activeAccent = _cornerMode == CornerDragMode.ResizeWindow
+                    ? Color.FromArgb(215, 56, 189, 248)
+                    : Color.FromArgb(215, 192, 132, 252);
+                using (Pen bp = new Pen(activeAccent, Math.Max(1.5f, 1.5f * s)))
+                    g.DrawRectangle(bp, 1, 1, Width - 2, Height - 2);
+                DpiHelper.DrawCornerGrips(g, Width, Height, activeAccent, s);
+            }
+            else
+            {
+                _rectCornerModeBtn = Rectangle.Empty;
+                Color borderCol = (leftOverlap || rightOverlap)
+                    ? Color.FromArgb(95, 210, 95, 95)
+                    : Color.FromArgb(32, 255, 255, 255);
+                using (Pen bp = new Pen(borderCol, 1.0f))
+                    g.DrawRectangle(bp, 0, 0, Width - 1, Height - 1);
+            }
+        }
+    }
+
     public class ControlCenterForm : Form
     {
         private const int WM_HOTKEY = 0x0312;
@@ -4963,6 +6528,8 @@ namespace FreeOverlay
         private readonly OverlayForm _standingsForm;
         private readonly DeltaBarForm _deltaBarForm;
         private readonly Garage61OverlayForm _garage61Form;
+        private readonly RelativeGapForm _relativeGapForm;
+        private readonly OverlapRadarForm _radarForm;
         private readonly Timer _timer;
         private readonly Stopwatch _frameStopwatch;
         private readonly NotifyIcon _trayIcon;
@@ -4972,7 +6539,7 @@ namespace FreeOverlay
         private int _tickCounter = 0;
         private bool _lastHubConnected = false;
         private bool _lastHubIsLive = false;
-        private int _activeTab = 0; // 0 = Standings, 1 = Delta Bar, 2 = Garage61 Coach
+        private int _activeTab = 0; // 0 = Standings, 1 = Delta Bar, 2 = Garage61, 3 = Relative Gap, 4 = Overlap Radar
 
         // Interactive Hub hit rectangles
         private Rectangle _btnLockAll;
@@ -4980,10 +6547,12 @@ namespace FreeOverlay
         private Rectangle _btnHideHub;
         private Rectangle _btnQuitApp;
 
-        // Top Widget Tabs
+        // Left Sidebar Widget Tabs
         private Rectangle _tabStandings;
         private Rectangle _tabDeltaBar;
         private Rectangle _tabGarage61;
+        private Rectangle _tabRelativeGap;
+        private Rectangle _tabRadar;
 
         // Standings Tab controls
         private Rectangle _btnStandingsToggle;
@@ -5034,6 +6603,37 @@ namespace FreeOverlay
         private Rectangle _btnG61OpacPlus;
         private Rectangle _btnG61Reset;
 
+        // Relative Gap Tab controls
+        private Rectangle _btnRelGapToggle;
+        private Rectangle _btnRelGapAutoOpen;
+        private Rectangle _btnRelGapStyleA;
+        private Rectangle _btnRelGapStyleB;
+        private Rectangle _btnRelGapStyleC;
+        private Rectangle _btnRelGapAlertToggle;
+        private Rectangle _btnRelGapThr25;
+        private Rectangle _btnRelGapThr35;
+        private Rectangle _btnRelGapThr50;
+        private Rectangle _btnRelGapFontMinus;
+        private Rectangle _btnRelGapFontPlus;
+        private Rectangle _btnRelGapOpacMinus;
+        private Rectangle _btnRelGapOpacPlus;
+        private Rectangle _btnRelGapReset;
+
+        // Overlap Radar Tab controls
+        private Rectangle _btnRadarToggle;
+        private Rectangle _btnRadarAutoOpen;
+        private Rectangle _btnRadarStyleA;
+        private Rectangle _btnRadarStyleB;
+        private Rectangle _btnRadarStyleC;
+        private Rectangle _btnRadarRange6;
+        private Rectangle _btnRadarRange85;
+        private Rectangle _btnRadarRange11;
+        private Rectangle _btnRadarFontMinus;
+        private Rectangle _btnRadarFontPlus;
+        private Rectangle _btnRadarOpacMinus;
+        private Rectangle _btnRadarOpacPlus;
+        private Rectangle _btnRadarReset;
+
         public ControlCenterForm()
         {
             _settings = new OverlaySettings();
@@ -5053,6 +6653,8 @@ namespace FreeOverlay
             _standingsForm = new OverlayForm(_settings, _lastSnapshot);
             _deltaBarForm = new DeltaBarForm(_settings, _lastSnapshot);
             _garage61Form = new Garage61OverlayForm(_settings, _g61Manager, _lastSnapshot);
+            _relativeGapForm = new RelativeGapForm(_settings, _lastSnapshot);
+            _radarForm = new OverlapRadarForm(_settings, _lastSnapshot);
 
             _settings.Changed += OnSettingsChanged;
 
@@ -5086,6 +6688,18 @@ namespace FreeOverlay
             {
                 _settings.Garage61Enabled = !_settings.Garage61Enabled;
                 _settings.Garage61AutoOpen = _settings.Garage61Enabled;
+                _settings.NotifyChanged();
+            });
+            trayMenu.MenuItems.Add("Toggle Relative Gap Overlay", delegate(object s, EventArgs e)
+            {
+                _settings.RelativeGapEnabled = !_settings.RelativeGapEnabled;
+                _settings.RelativeGapAutoOpen = _settings.RelativeGapEnabled;
+                _settings.NotifyChanged();
+            });
+            trayMenu.MenuItems.Add("Toggle Overlap Radar Overlay", delegate(object s, EventArgs e)
+            {
+                _settings.RadarEnabled = !_settings.RadarEnabled;
+                _settings.RadarAutoOpen = _settings.RadarEnabled;
                 _settings.NotifyChanged();
             });
             trayMenu.MenuItems.Add("Toggle Braking Audio Cues", delegate(object s, EventArgs e)
@@ -5143,6 +6757,8 @@ namespace FreeOverlay
             if (_standingsForm != null) _standingsForm.SaveGeometry();
             if (_deltaBarForm != null) _deltaBarForm.SaveGeometry();
             if (_garage61Form != null) _garage61Form.SaveGeometry();
+            if (_relativeGapForm != null) _relativeGapForm.SaveGeometry();
+            if (_radarForm != null) _radarForm.SaveGeometry();
             _settings.Save();
             timeEndPeriod(1);
             UnregisterHotKey(Handle, HOTKEY_HUB);
@@ -5162,6 +6778,8 @@ namespace FreeOverlay
             if (_standingsForm != null) _standingsForm.SaveGeometry();
             if (_deltaBarForm != null) _deltaBarForm.SaveGeometry();
             if (_garage61Form != null) _garage61Form.SaveGeometry();
+            if (_relativeGapForm != null) _relativeGapForm.SaveGeometry();
+            if (_radarForm != null) _radarForm.SaveGeometry();
             _settings.Save();
             _timer.Stop();
             timeEndPeriod(1);
@@ -5221,6 +6839,26 @@ namespace FreeOverlay
             {
                 if (_garage61Form.Visible) _garage61Form.Hide();
             }
+
+            if (_settings.RelativeGapEnabled)
+            {
+                if (!_relativeGapForm.Visible) _relativeGapForm.Show();
+                _relativeGapForm.ApplySettingsState();
+            }
+            else
+            {
+                if (_relativeGapForm.Visible) _relativeGapForm.Hide();
+            }
+
+            if (_settings.RadarEnabled)
+            {
+                if (!_radarForm.Visible) _radarForm.Show();
+                _radarForm.ApplySettingsState();
+            }
+            else
+            {
+                if (_radarForm.Visible) _radarForm.Hide();
+            }
         }
 
         private void OnTimerTick(object sender, EventArgs e)
@@ -5230,7 +6868,7 @@ namespace FreeOverlay
             _frameStopwatch.Restart();
             if (dtSec <= 0.001 || dtSec > 0.25) dtSec = 0.01667;
 
-            bool anyOverlayEnabled = _settings.StandingsEnabled || _settings.DeltaBarEnabled || _settings.Garage61Enabled;
+            bool anyOverlayEnabled = _settings.StandingsEnabled || _settings.DeltaBarEnabled || _settings.Garage61Enabled || _settings.RelativeGapEnabled || _settings.RadarEnabled;
             int targetInterval = anyOverlayEnabled ? 16 : 200;
             if (_timer.Interval != targetInterval)
             {
@@ -5242,7 +6880,7 @@ namespace FreeOverlay
                 return;
             }
 
-            bool needStandingsRebuild = _settings.StandingsEnabled && (_tickCounter % 12 == 0);
+            bool needStandingsRebuild = _settings.StandingsEnabled && (_tickCounter % 5 == 0);
             SessionSnapshot snap = null;
 
             if (_settings.Mode == TelemetryMode.Live || _settings.Mode == TelemetryMode.Auto)
@@ -5274,7 +6912,7 @@ namespace FreeOverlay
                 _g61Manager.UpdatePlayerTelemetry(snap.PlayerLapDistPct, snap.PlayerBrakePct, snap.PlayerThrottlePct, snap.TrackLengthMeters, snap.PlayerSpeedKph, allowAudio);
             }
 
-            // Repaint Delta Bar & Garage61 at 30 FPS (every 2nd tick = 32ms) while sampling telemetry & audio at 60 Hz
+            // Repaint fast HUD overlays at 30 FPS (every 2nd tick = 32ms) while sampling telemetry & audio at 60 Hz
             if (_tickCounter % 2 == 0)
             {
                 if (_settings.DeltaBarEnabled && _deltaBarForm.Visible)
@@ -5286,10 +6924,20 @@ namespace FreeOverlay
                 {
                     _garage61Form.UpdateSnapshot(snap);
                 }
+
+                if (_settings.RelativeGapEnabled && _relativeGapForm.Visible)
+                {
+                    _relativeGapForm.UpdateSnapshot(snap);
+                }
+
+                if (_settings.RadarEnabled && _radarForm.Visible)
+                {
+                    _radarForm.UpdateSnapshot(snap);
+                }
             }
 
-            // Update Standings at ~5 Hz (every 12 ticks at 60 FPS = ~200ms)
-            if (_settings.StandingsEnabled && _standingsForm.Visible && (_tickCounter % 12 == 0))
+            // Update Standings at ~12 Hz (every 5 ticks at 60 FPS = ~80ms) for immediate overtake updates
+            if (_settings.StandingsEnabled && _standingsForm.Visible && (_tickCounter % 5 == 0))
             {
                 _standingsForm.UpdateSnapshot(snap);
             }
@@ -5415,6 +7063,18 @@ namespace FreeOverlay
             if (_tabGarage61.Contains(pt))
             {
                 _activeTab = 2;
+                Invalidate();
+                return;
+            }
+            if (_tabRelativeGap.Contains(pt))
+            {
+                _activeTab = 3;
+                Invalidate();
+                return;
+            }
+            if (_tabRadar.Contains(pt))
+            {
+                _activeTab = 4;
                 Invalidate();
                 return;
             }
@@ -5690,6 +7350,176 @@ namespace FreeOverlay
                 {
                     _settings.Garage61FontScale = 1.0f;
                     _garage61Form.ResetPositionAndSize(true);
+                    return;
+                }
+            }
+            else if (_activeTab == 3)
+            {
+                if (_btnRelGapToggle.Contains(pt))
+                {
+                    _settings.RelativeGapEnabled = !_settings.RelativeGapEnabled;
+                    _settings.RelativeGapAutoOpen = _settings.RelativeGapEnabled;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRelGapAutoOpen.Contains(pt))
+                {
+                    _settings.RelativeGapAutoOpen = !_settings.RelativeGapAutoOpen;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRelGapStyleA.Contains(pt))
+                {
+                    _settings.RelativeGapStyle = RelativeGapLayoutStyle.OptionA_StackedSightline;
+                    _relativeGapForm.AdjustWindowToMatchStyle(true);
+                    return;
+                }
+                if (_btnRelGapStyleB.Contains(pt))
+                {
+                    _settings.RelativeGapStyle = RelativeGapLayoutStyle.OptionB_HorizontalStrip;
+                    _relativeGapForm.AdjustWindowToMatchStyle(true);
+                    return;
+                }
+                if (_btnRelGapStyleC.Contains(pt))
+                {
+                    _settings.RelativeGapStyle = RelativeGapLayoutStyle.OptionC_MinimalThreatBar;
+                    _relativeGapForm.AdjustWindowToMatchStyle(true);
+                    return;
+                }
+                if (_btnRelGapAlertToggle.Contains(pt))
+                {
+                    _settings.RelativeOvertakeAlert = !_settings.RelativeOvertakeAlert;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRelGapThr25.Contains(pt))
+                {
+                    _settings.RelativeOvertakeThresholdSec = 0.25f;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRelGapThr35.Contains(pt))
+                {
+                    _settings.RelativeOvertakeThresholdSec = 0.35f;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRelGapThr50.Contains(pt))
+                {
+                    _settings.RelativeOvertakeThresholdSec = 0.50f;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRelGapFontMinus.Contains(pt))
+                {
+                    _settings.RelativeGapFontScale = Math.Max(0.65f, (float)Math.Round(_settings.RelativeGapFontScale - 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRelGapFontPlus.Contains(pt))
+                {
+                    _settings.RelativeGapFontScale = Math.Min(1.75f, (float)Math.Round(_settings.RelativeGapFontScale + 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRelGapOpacMinus.Contains(pt))
+                {
+                    _settings.RelativeGapOpacity = Math.Max(0.45f, (float)Math.Round(_settings.RelativeGapOpacity - 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRelGapOpacPlus.Contains(pt))
+                {
+                    _settings.RelativeGapOpacity = Math.Min(1.0f, (float)Math.Round(_settings.RelativeGapOpacity + 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRelGapReset.Contains(pt))
+                {
+                    _settings.RelativeGapFontScale = 1.0f;
+                    _relativeGapForm.ResetPositionAndSize(true);
+                    return;
+                }
+            }
+            else if (_activeTab == 4)
+            {
+                if (_btnRadarToggle.Contains(pt))
+                {
+                    _settings.RadarEnabled = !_settings.RadarEnabled;
+                    _settings.RadarAutoOpen = _settings.RadarEnabled;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRadarAutoOpen.Contains(pt))
+                {
+                    _settings.RadarAutoOpen = !_settings.RadarAutoOpen;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRadarStyleA.Contains(pt))
+                {
+                    _settings.RadarStyle = OverlapRadarLayoutStyle.OptionA_MinimalTopDown;
+                    _radarForm.AdjustWindowToMatchStyle(true);
+                    return;
+                }
+                if (_btnRadarStyleB.Contains(pt))
+                {
+                    _settings.RadarStyle = OverlapRadarLayoutStyle.OptionB_ParallelStrips;
+                    _radarForm.AdjustWindowToMatchStyle(true);
+                    return;
+                }
+                if (_btnRadarStyleC.Contains(pt))
+                {
+                    _settings.RadarStyle = OverlapRadarLayoutStyle.OptionC_SubtleSideBars;
+                    _radarForm.AdjustWindowToMatchStyle(true);
+                    return;
+                }
+                if (_btnRadarRange6.Contains(pt))
+                {
+                    _settings.RadarTriggerRangeMeters = 6.5f;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRadarRange85.Contains(pt))
+                {
+                    _settings.RadarTriggerRangeMeters = 8.5f;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRadarRange11.Contains(pt))
+                {
+                    _settings.RadarTriggerRangeMeters = 11.0f;
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRadarFontMinus.Contains(pt))
+                {
+                    _settings.RadarFontScale = Math.Max(0.65f, (float)Math.Round(_settings.RadarFontScale - 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRadarFontPlus.Contains(pt))
+                {
+                    _settings.RadarFontScale = Math.Min(1.75f, (float)Math.Round(_settings.RadarFontScale + 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRadarOpacMinus.Contains(pt))
+                {
+                    _settings.RadarOpacity = Math.Max(0.45f, (float)Math.Round(_settings.RadarOpacity - 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRadarOpacPlus.Contains(pt))
+                {
+                    _settings.RadarOpacity = Math.Min(1.0f, (float)Math.Round(_settings.RadarOpacity + 0.05f, 2));
+                    _settings.NotifyChanged();
+                    return;
+                }
+                if (_btnRadarReset.Contains(pt))
+                {
+                    _settings.RadarFontScale = 1.0f;
+                    _radarForm.ResetPositionAndSize(true);
                     return;
                 }
             }
@@ -6257,6 +8087,271 @@ namespace FreeOverlay
             }
         }
 
+        private void DrawRelativeGapPreview(Graphics g, Rectangle vp, float s)
+        {
+            string styleTitle = "RELATIVE GAP — OPTION A (STACKED SIGHTLINE PILL) PREVIEW";
+            string styleSub = "Minimal 2-row stack showing only Gap Ahead (+1.42s) and Gap Behind (-0.21s) with muted overtake alert.";
+            if (_settings.RelativeGapStyle == RelativeGapLayoutStyle.OptionB_HorizontalStrip)
+            {
+                styleTitle = "RELATIVE GAP — OPTION B (HORIZONTAL SPLIT STRIP) PREVIEW";
+                styleSub = "Ultra-thin horizontal dual pill (AHD +1.42s | BHD -0.21s) for mounting above or below the virtual mirror.";
+            }
+            else if (_settings.RelativeGapStyle == RelativeGapLayoutStyle.OptionC_MinimalThreatBar)
+            {
+                styleTitle = "RELATIVE GAP — OPTION C (MINIMAL NUMBERS + THREAT BAR) PREVIEW";
+                styleSub = "Pure numbers separated by a thin 4px closing-speed threat meter bar.";
+            }
+
+            DrawSimulatedViewportFrame(g, vp, styleTitle, styleSub, s);
+
+            using (Font fLabel = new Font("Segoe UI", 10.0f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (Font fVal = new Font("Consolas", 17.5f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            {
+                StringFormat lf = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
+                StringFormat rf = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center };
+
+                int pad = (int)Math.Round(12 * s);
+                bool alertOn = _settings.RelativeOvertakeAlert;
+
+                if (_settings.RelativeGapStyle == RelativeGapLayoutStyle.OptionB_HorizontalStrip)
+                {
+                    int w = (int)Math.Round(292 * s);
+                    int h = (int)Math.Round(48 * s);
+                    int x = vp.Left + (vp.Width - w) / 2;
+                    int y = vp.Top + (vp.Height - (int)Math.Round(46 * s) - h) / 2;
+
+                    Rectangle box = new Rectangle(x, y, w, h);
+                    using (SolidBrush bg = new SolidBrush(Color.FromArgb(235, 11, 15, 22))) g.FillRectangle(bg, box);
+                    int midX = x + w / 2;
+                    if (alertOn)
+                    {
+                        using (SolidBrush ab = new SolidBrush(Color.FromArgb(42, 239, 68, 68)))
+                            g.FillRectangle(ab, midX, y, w - (midX - x), h);
+                    }
+                    using (Pen dp = new Pen(Color.FromArgb(35, 255, 255, 255), 1f))
+                        g.DrawLine(dp, midX, y + (int)(6 * s), midX, y + h - (int)(6 * s));
+
+                    using (SolidBrush mut = new SolidBrush(Color.FromArgb(100, 116, 139)))
+                        g.DrawString("AHD", fLabel, mut, new RectangleF(x + pad, y, (w / 2) * 0.45f, h), lf);
+                    using (SolidBrush av = new SolidBrush(Color.FromArgb(226, 232, 240)))
+                        g.DrawString("+1.42s", fVal, av, new RectangleF(x + pad, y, (w / 2) - pad * 1.8f, h), rf);
+
+                    using (SolidBrush bl = new SolidBrush(alertOn ? Color.FromArgb(252, 165, 165) : Color.FromArgb(100, 116, 139)))
+                        g.DrawString(alertOn ? "ATK" : "BHD", fLabel, bl, new RectangleF(midX + pad * 0.8f, y, (w / 2) * 0.45f, h), lf);
+                    using (SolidBrush bv = new SolidBrush(alertOn ? Color.FromArgb(248, 113, 113) : Color.FromArgb(148, 163, 184)))
+                        g.DrawString("-0.21s", fVal, bv, new RectangleF(midX, y, (w / 2) - pad, h), rf);
+
+                    using (Pen bp = new Pen(alertOn ? Color.FromArgb(130, 239, 68, 68) : Color.FromArgb(45, 255, 255, 255), 1f))
+                        g.DrawRectangle(bp, box);
+                }
+                else if (_settings.RelativeGapStyle == RelativeGapLayoutStyle.OptionC_MinimalThreatBar)
+                {
+                    int w = (int)Math.Round(228 * s);
+                    int h = (int)Math.Round(84 * s);
+                    int x = vp.Left + (vp.Width - w) / 2;
+                    int y = vp.Top + (vp.Height - (int)Math.Round(46 * s) - h) / 2;
+
+                    Rectangle box = new Rectangle(x, y, w, h);
+                    using (SolidBrush bg = new SolidBrush(Color.FromArgb(235, 11, 15, 22))) g.FillRectangle(bg, box);
+
+                    int barH = Math.Max(3, (int)Math.Round(4 * s));
+                    int midY = y + h / 2;
+                    Rectangle topR = new Rectangle(x + pad, y + (int)(2 * s), w - pad * 2, (h / 2) - barH);
+                    Rectangle barR = new Rectangle(x + pad, midY - barH / 2, w - pad * 2, barH);
+                    Rectangle botR = new Rectangle(x + pad, midY + barH / 2 + (int)(2 * s), w - pad * 2, (h / 2) - barH);
+
+                    using (SolidBrush mut = new SolidBrush(Color.FromArgb(100, 116, 139)))
+                        g.DrawString("AHEAD", fLabel, mut, topR, lf);
+                    using (SolidBrush av = new SolidBrush(Color.FromArgb(226, 232, 240)))
+                        g.DrawString("+1.42s", fVal, av, topR, rf);
+
+                    using (SolidBrush tbg = new SolidBrush(Color.FromArgb(25, 255, 255, 255)))
+                        g.FillRectangle(tbg, barR);
+                    using (SolidBrush tfg = new SolidBrush(alertOn ? Color.FromArgb(220, 239, 68, 68) : Color.FromArgb(110, 148, 163, 184)))
+                        g.FillRectangle(tfg, barR.Left, barR.Top, (int)(barR.Width * 0.85f), barR.Height);
+
+                    using (SolidBrush bl = new SolidBrush(alertOn ? Color.FromArgb(248, 113, 113) : Color.FromArgb(100, 116, 139)))
+                        g.DrawString(alertOn ? "OVERTAKE" : "BEHIND", fLabel, bl, botR, lf);
+                    using (SolidBrush bv = new SolidBrush(alertOn ? Color.FromArgb(248, 113, 113) : Color.FromArgb(148, 163, 184)))
+                        g.DrawString("-0.21s", fVal, bv, botR, rf);
+
+                    using (Pen bp = new Pen(alertOn ? Color.FromArgb(130, 239, 68, 68) : Color.FromArgb(45, 255, 255, 255), 1f))
+                        g.DrawRectangle(bp, box);
+                }
+                else
+                {
+                    int w = (int)Math.Round(224 * s);
+                    int h = (int)Math.Round(78 * s);
+                    int x = vp.Left + (vp.Width - w) / 2;
+                    int y = vp.Top + (vp.Height - (int)Math.Round(46 * s) - h) / 2;
+
+                    Rectangle box = new Rectangle(x, y, w, h);
+                    using (SolidBrush bg = new SolidBrush(Color.FromArgb(235, 11, 15, 22))) g.FillRectangle(bg, box);
+                    int midY = y + h / 2;
+                    if (alertOn)
+                    {
+                        using (SolidBrush ab = new SolidBrush(Color.FromArgb(40, 239, 68, 68)))
+                            g.FillRectangle(ab, x, midY, w, h - (midY - y));
+                        using (SolidBrush sb = new SolidBrush(Color.FromArgb(239, 68, 68)))
+                            g.FillRectangle(sb, x, midY, Math.Max(3, (int)Math.Round(3 * s)), h - (midY - y));
+                    }
+                    using (Pen dp = new Pen(Color.FromArgb(26, 255, 255, 255), 1f))
+                        g.DrawLine(dp, x, midY, x + w, midY);
+
+                    Rectangle topR = new Rectangle(x + pad, y, w - pad * 2, h / 2);
+                    Rectangle botR = new Rectangle(x + pad, midY, w - pad * 2, h - (h / 2));
+
+                    using (SolidBrush mut = new SolidBrush(Color.FromArgb(100, 116, 139)))
+                        g.DrawString("AHEAD", fLabel, mut, topR, lf);
+                    using (SolidBrush av = new SolidBrush(Color.FromArgb(226, 232, 240)))
+                        g.DrawString("+1.42s", fVal, av, topR, rf);
+
+                    using (SolidBrush bl = new SolidBrush(alertOn ? Color.FromArgb(252, 165, 165) : Color.FromArgb(100, 116, 139)))
+                        g.DrawString(alertOn ? "BEHIND • ATK" : "BEHIND", fLabel, bl, botR, lf);
+                    using (SolidBrush bv = new SolidBrush(alertOn ? Color.FromArgb(248, 113, 113) : Color.FromArgb(148, 163, 184)))
+                        g.DrawString("-0.21s", fVal, bv, botR, rf);
+
+                    using (Pen bp = new Pen(alertOn ? Color.FromArgb(130, 239, 68, 68) : Color.FromArgb(45, 255, 255, 255), 1f))
+                        g.DrawRectangle(bp, box);
+                }
+            }
+        }
+
+        private void DrawOverlapRadarPreview(Graphics g, Rectangle vp, float s)
+        {
+            string styleTitle = "OVERLAP RADAR — OPTION B (PARALLEL STRIPS) PREVIEW";
+            string styleSub = "100% invisible when clear. Shows flat muted longitudinal overlap strips only when a car is within " + _settings.RadarTriggerRangeMeters.ToString("0.0", CultureInfo.InvariantCulture) + "m.";
+            if (_settings.RadarStyle == OverlapRadarLayoutStyle.OptionA_MinimalTopDown)
+            {
+                styleTitle = "OVERLAP RADAR — OPTION A (MINIMAL TOP-DOWN SILHOUETTE) PREVIEW";
+                styleSub = "100% invisible when clear. Minimal flat car box + front/rear bumper lines with zero radar rings or glow.";
+            }
+            else if (_settings.RadarStyle == OverlapRadarLayoutStyle.OptionC_SubtleSideBars)
+            {
+                styleTitle = "OVERLAP RADAR — OPTION C (SUBTLE SIDE BARS) PREVIEW";
+                styleSub = "100% invisible when clear. Ultra-compact horizontal left/right blindspot pills.";
+            }
+
+            DrawSimulatedViewportFrame(g, vp, styleTitle, styleSub, s);
+
+            using (Font fTiny = new Font("Segoe UI", 9.0f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+            {
+                StringFormat cf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+
+                Color selfFill = Color.FromArgb(40, 148, 163, 184);
+                Color selfBorder = Color.FromArgb(115, 148, 163, 184);
+                Color clearanceCol = Color.FromArgb(95, 210, 95, 95);
+
+                if (_settings.RadarStyle == OverlapRadarLayoutStyle.OptionC_SubtleSideBars)
+                {
+                    int w = (int)Math.Round(236 * s);
+                    int h = (int)Math.Round(54 * s);
+                    int x = vp.Left + (vp.Width - w) / 2;
+                    int y = vp.Top + (vp.Height - (int)Math.Round(46 * s) - h) / 2;
+
+                    Rectangle box = new Rectangle(x, y, w, h);
+                    using (SolidBrush bg = new SolidBrush(Color.FromArgb(215, 11, 15, 22))) g.FillRectangle(bg, box);
+                    using (Pen bp = new Pen(Color.FromArgb(75, 210, 95, 95), 1f)) g.DrawRectangle(bp, box);
+
+                    int padX = (int)Math.Round(10 * s);
+                    int padY = (int)Math.Round(10 * s);
+                    int pillW = (w - padX * 3) / 2;
+                    int pillH = h - padY * 2;
+                    Rectangle lp = new Rectangle(x + padX, y + padY, pillW, pillH);
+                    Rectangle rp = new Rectangle(x + padX * 2 + pillW, y + padY, pillW, pillH);
+
+                    using (SolidBrush lb = new SolidBrush(Color.FromArgb(65, 210, 95, 95))) g.FillRectangle(lb, lp);
+                    using (Pen lpen = new Pen(Color.FromArgb(185, 226, 118, 118), 1f)) g.DrawRectangle(lpen, lp);
+                    using (SolidBrush barB = new SolidBrush(Color.FromArgb(226, 118, 118)))
+                        g.FillRectangle(barB, lp.Left, lp.Top, Math.Max(3, (int)Math.Round(4 * s)), lp.Height);
+                    using (SolidBrush tb = new SolidBrush(Color.FromArgb(226, 232, 240)))
+                        g.DrawString("LEFT", fTiny, tb, lp, cf);
+
+                    using (SolidBrush rb = new SolidBrush(Color.FromArgb(16, 255, 255, 255))) g.FillRectangle(rb, rp);
+                    using (Pen rpen = new Pen(Color.FromArgb(30, 255, 255, 255), 1f)) g.DrawRectangle(rpen, rp);
+                    using (SolidBrush tb = new SolidBrush(Color.FromArgb(75, 148, 163, 184)))
+                        g.DrawString("CLEAR", fTiny, tb, rp, cf);
+                }
+                else if (_settings.RadarStyle == OverlapRadarLayoutStyle.OptionA_MinimalTopDown)
+                {
+                    int w = (int)Math.Round(186 * s);
+                    int h = (int)Math.Round(172 * s);
+                    int x = vp.Left + (vp.Width - w) / 2;
+                    int y = vp.Top + (vp.Height - (int)Math.Round(46 * s) - h) / 2;
+
+                    Rectangle box = new Rectangle(x, y, w, h);
+                    using (SolidBrush bg = new SolidBrush(Color.FromArgb(215, 11, 15, 22))) g.FillRectangle(bg, box);
+                    using (Pen bp = new Pen(Color.FromArgb(75, 210, 95, 95), 1f)) g.DrawRectangle(bp, box);
+
+                    int cx = x + w / 2;
+                    int cy = y + h / 2;
+                    int carW = (int)Math.Round(28 * s);
+                    int carH = (int)Math.Round(60 * s);
+                    Rectangle selfR = new Rectangle(cx - carW / 2, cy - carH / 2, carW, carH);
+
+                    using (Pen clPen = new Pen(clearanceCol, 1f) { DashStyle = DashStyle.Dash })
+                    {
+                        g.DrawLine(clPen, x + (int)(16 * s), selfR.Top, x + w - (int)(16 * s), selfR.Top);
+                        g.DrawLine(clPen, x + (int)(16 * s), selfR.Bottom, x + w - (int)(16 * s), selfR.Bottom);
+                    }
+
+                    using (SolidBrush sb = new SolidBrush(selfFill)) g.FillRectangle(sb, selfR);
+                    using (Pen sp = new Pen(selfBorder, 1.2f)) g.DrawRectangle(sp, selfR);
+
+                    Rectangle oppR = new Rectangle(cx - (int)Math.Round(46 * s) - carW / 2, cy - carH / 2 + (int)Math.Round(14 * s), carW, carH);
+                    using (SolidBrush ob = new SolidBrush(Color.FromArgb(145, 210, 95, 95))) g.FillRectangle(ob, oppR);
+                    using (Pen op = new Pen(Color.FromArgb(225, 226, 118, 118), 1.2f)) g.DrawRectangle(op, oppR);
+                }
+                else
+                {
+                    int w = (int)Math.Round(158 * s);
+                    int h = (int)Math.Round(166 * s);
+                    int x = vp.Left + (vp.Width - w) / 2;
+                    int y = vp.Top + (vp.Height - (int)Math.Round(46 * s) - h) / 2;
+
+                    Rectangle box = new Rectangle(x, y, w, h);
+                    using (SolidBrush bg = new SolidBrush(Color.FromArgb(215, 11, 15, 22))) g.FillRectangle(bg, box);
+                    using (Pen bp = new Pen(Color.FromArgb(75, 210, 95, 95), 1f)) g.DrawRectangle(bp, box);
+
+                    int cx = x + w / 2;
+                    int cy = y + h / 2;
+                    int padY = (int)Math.Round(16 * s);
+                    int trackH = h - padY * 2;
+                    int stripW = (int)Math.Round(14 * s);
+                    int selfW = (int)Math.Round(18 * s);
+                    int selfH = (int)Math.Round(56 * s);
+                    int stripGap = (int)Math.Round(18 * s);
+
+                    Rectangle selfR = new Rectangle(cx - selfW / 2, cy - selfH / 2, selfW, selfH);
+                    Rectangle lTrack = new Rectangle(selfR.Left - stripGap - stripW, y + padY, stripW, trackH);
+                    Rectangle rTrack = new Rectangle(selfR.Right + stripGap, y + padY, stripW, trackH);
+
+                    using (Pen clPen = new Pen(clearanceCol, 1f))
+                    {
+                        g.DrawLine(clPen, lTrack.Left - (int)(4 * s), selfR.Top, rTrack.Right + (int)(4 * s), selfR.Top);
+                        g.DrawLine(clPen, lTrack.Left - (int)(4 * s), selfR.Bottom, rTrack.Right + (int)(4 * s), selfR.Bottom);
+                    }
+
+                    using (SolidBrush tbg = new SolidBrush(Color.FromArgb(18, 255, 255, 255)))
+                    {
+                        g.FillRectangle(tbg, lTrack);
+                        g.FillRectangle(tbg, rTrack);
+                    }
+                    using (Pen tp = new Pen(Color.FromArgb(30, 255, 255, 255), 1f))
+                    {
+                        g.DrawRectangle(tp, lTrack);
+                        g.DrawRectangle(tp, rTrack);
+                    }
+
+                    using (SolidBrush sb = new SolidBrush(selfFill)) g.FillRectangle(sb, selfR);
+                    using (Pen sp = new Pen(selfBorder, 1.2f)) g.DrawRectangle(sp, selfR);
+
+                    Rectangle oppBar = new Rectangle(lTrack.Left + 1, cy - selfH / 2 + (int)Math.Round(12 * s), lTrack.Width - 2, selfH);
+                    using (SolidBrush ob = new SolidBrush(Color.FromArgb(185, 210, 95, 95))) g.FillRectangle(ob, oppBar);
+                }
+            }
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
@@ -6354,8 +8449,8 @@ namespace FreeOverlay
                 }
                 sbCurY += (int)Math.Round(22 * s);
 
-                int vTabH = (int)Math.Round(56 * s);
-                int vTabGap = (int)Math.Round(8 * s);
+                int vTabH = (int)Math.Round(52 * s);
+                int vTabGap = (int)Math.Round(7 * s);
 
                 _tabStandings = DrawTabButton(
                     g, fTab, fBadge, "1. STANDINGS",
@@ -6375,6 +8470,20 @@ namespace FreeOverlay
                     g, fTab, fBadge, "3. GARAGE61 COACH",
                     _settings.Garage61Enabled, _settings.Garage61AutoOpen,
                     sidebarPanel.Left + sbPad, sbCurY, sbInnerW, vTabH, _activeTab == 2, s
+                );
+                sbCurY += vTabH + vTabGap;
+
+                _tabRelativeGap = DrawTabButton(
+                    g, fTab, fBadge, "4. RELATIVE GAP",
+                    _settings.RelativeGapEnabled, _settings.RelativeGapAutoOpen,
+                    sidebarPanel.Left + sbPad, sbCurY, sbInnerW, vTabH, _activeTab == 3, s
+                );
+                sbCurY += vTabH + vTabGap;
+
+                _tabRadar = DrawTabButton(
+                    g, fTab, fBadge, "5. OVERLAP RADAR",
+                    _settings.RadarEnabled, _settings.RadarAutoOpen,
+                    sidebarPanel.Left + sbPad, sbCurY, sbInnerW, vTabH, _activeTab == 4, s
                 );
 
                 int sx = settingsPanel.Left + (int)Math.Round(16 * s);
@@ -6571,7 +8680,7 @@ namespace FreeOverlay
 
                     DrawDeltaBarPreview(g, viewportRect, s);
                 }
-                else
+                else if (_activeTab == 2)
                 {
                     // =====================================================
                     // TAB 3: GARAGE61 COACH SETTINGS + PREVIEW
@@ -6660,6 +8769,159 @@ namespace FreeOverlay
                     _btnG61Reset = DrawButton(g, fBtn, "RESET POSITION & SIZE", sx, resetY, sw, rowH, false, Color.FromArgb(56, 189, 248), s);
 
                     DrawGarage61Preview(g, viewportRect, s);
+                }
+                else if (_activeTab == 3)
+                {
+                    // =====================================================
+                    // TAB 4: RELATIVE GAP & OVERTAKE ALERT SETTINGS + PREVIEW
+                    // =====================================================
+                    g.DrawString("RELATIVE GAP SETTINGS", fCardTitle, Brushes.White,
+                        new RectangleF(sx, curY, sw, rowH), leftFmt);
+                    curY += rowH + (int)Math.Round(6 * s);
+
+                    g.DrawString("Widget Status (Now)", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnRelGapToggle = DrawButton(
+                        g, fBtn,
+                        _settings.RelativeGapEnabled ? "OPEN (VISIBLE)" : "CLOSED (HIDDEN)",
+                        rStart, curY, optW, rowH,
+                        _settings.RelativeGapEnabled,
+                        _settings.RelativeGapEnabled ? Color.FromArgb(34, 197, 94) : Color.FromArgb(107, 114, 128),
+                        s
+                    );
+                    curY += rowH + gapY;
+
+                    g.DrawString("Open Automatically on Launch", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnRelGapAutoOpen = DrawButton(
+                        g, fBtn,
+                        _settings.RelativeGapAutoOpen ? "YES (AUTO-OPEN)" : "NO (MANUAL)",
+                        rStart, curY, optW, rowH,
+                        _settings.RelativeGapAutoOpen,
+                        _settings.RelativeGapAutoOpen ? Color.FromArgb(56, 189, 248) : Color.FromArgb(107, 114, 128),
+                        s
+                    );
+                    curY += rowH + gapY;
+
+                    g.DrawString("Minimalist Layout Variation", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw, (int)(18 * s)), leftFmt);
+                    curY += (int)Math.Round(20 * s);
+                    int refGap = (int)Math.Round(6 * s);
+                    int stW = (sw - refGap * 2) / 3;
+                    _btnRelGapStyleA = DrawButton(g, fBtn, "OPT A: STACKED", sx, curY, stW, rowH,
+                        _settings.RelativeGapStyle == RelativeGapLayoutStyle.OptionA_StackedSightline, Color.FromArgb(56, 189, 248), s);
+                    _btnRelGapStyleB = DrawButton(g, fBtn, "OPT B: STRIP", sx + stW + refGap, curY, stW, rowH,
+                        _settings.RelativeGapStyle == RelativeGapLayoutStyle.OptionB_HorizontalStrip, Color.FromArgb(56, 189, 248), s);
+                    _btnRelGapStyleC = DrawButton(g, fBtn, "OPT C: METER", sx + (stW + refGap) * 2, curY, sw - (stW + refGap) * 2, rowH,
+                        _settings.RelativeGapStyle == RelativeGapLayoutStyle.OptionC_MinimalThreatBar, Color.FromArgb(56, 189, 248), s);
+                    curY += rowH + gapY;
+
+                    g.DrawString("Behind Overtake Visual Alert", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnRelGapAlertToggle = DrawButton(
+                        g, fBtn,
+                        _settings.RelativeOvertakeAlert ? "ENABLED" : "DISABLED",
+                        rStart, curY, optW, rowH,
+                        _settings.RelativeOvertakeAlert, Color.FromArgb(245, 158, 11), s
+                    );
+                    curY += rowH + gapY;
+
+                    int rngW = (optW - 8) / 3;
+                    g.DrawString("Overtake Attack Threshold", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnRelGapThr25 = DrawButton(g, fBtn, "0.25s", rStart, curY, rngW, rowH,
+                        Math.Abs(_settings.RelativeOvertakeThresholdSec - 0.25f) < 0.04f, Color.FromArgb(56, 189, 248), s);
+                    _btnRelGapThr35 = DrawButton(g, fBtn, "0.35s", rStart + rngW + 4, curY, rngW, rowH,
+                        Math.Abs(_settings.RelativeOvertakeThresholdSec - 0.35f) < 0.04f, Color.FromArgb(56, 189, 248), s);
+                    _btnRelGapThr50 = DrawButton(g, fBtn, "0.50s", rStart + (rngW + 4) * 2, curY, optW - (rngW + 4) * 2, rowH,
+                        Math.Abs(_settings.RelativeOvertakeThresholdSec - 0.50f) < 0.04f, Color.FromArgb(56, 189, 248), s);
+                    curY += rowH + gapY;
+
+                    g.DrawString("Font Scale", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnRelGapFontMinus = DrawButton(g, fBtn, "-", rStart, curY, pmW, rowH, false, Color.Gray, s);
+                    g.DrawString((int)Math.Round(_settings.RelativeGapFontScale * 100) + "%", fMono, Brushes.White,
+                        new RectangleF(rStart + pmW, curY, valW, rowH), centerFmt);
+                    _btnRelGapFontPlus = DrawButton(g, fBtn, "+", rStart + pmW + valW, curY, pmW, rowH, false, Color.Gray, s);
+                    curY += rowH + gapY;
+
+                    g.DrawString("Window Opacity", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnRelGapOpacMinus = DrawButton(g, fBtn, "-", rStart, curY, pmW, rowH, false, Color.Gray, s);
+                    g.DrawString((int)Math.Round(_settings.RelativeGapOpacity * 100) + "%", fMono, Brushes.White,
+                        new RectangleF(rStart + pmW, curY, valW, rowH), centerFmt);
+                    _btnRelGapOpacPlus = DrawButton(g, fBtn, "+", rStart + pmW + valW, curY, pmW, rowH, false, Color.Gray, s);
+
+                    _btnRelGapReset = DrawButton(g, fBtn, "RESET POSITION & SIZE", sx, resetY, sw, rowH, false, Color.FromArgb(56, 189, 248), s);
+
+                    DrawRelativeGapPreview(g, viewportRect, s);
+                }
+                else
+                {
+                    // =====================================================
+                    // TAB 5: OVERLAP RADAR SETTINGS + PREVIEW
+                    // =====================================================
+                    g.DrawString("OVERLAP RADAR SETTINGS", fCardTitle, Brushes.White,
+                        new RectangleF(sx, curY, sw, rowH), leftFmt);
+                    curY += rowH + (int)Math.Round(6 * s);
+
+                    g.DrawString("Widget Status (Now)", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnRadarToggle = DrawButton(
+                        g, fBtn,
+                        _settings.RadarEnabled ? "ARMED (AUTO-HIDE)" : "DISABLED (OFF)",
+                        rStart, curY, optW, rowH,
+                        _settings.RadarEnabled,
+                        _settings.RadarEnabled ? Color.FromArgb(34, 197, 94) : Color.FromArgb(107, 114, 128),
+                        s
+                    );
+                    curY += rowH + gapY;
+
+                    g.DrawString("Open Automatically on Launch", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnRadarAutoOpen = DrawButton(
+                        g, fBtn,
+                        _settings.RadarAutoOpen ? "YES (AUTO-OPEN)" : "NO (MANUAL)",
+                        rStart, curY, optW, rowH,
+                        _settings.RadarAutoOpen,
+                        _settings.RadarAutoOpen ? Color.FromArgb(56, 189, 248) : Color.FromArgb(107, 114, 128),
+                        s
+                    );
+                    curY += rowH + gapY;
+
+                    g.DrawString("Minimalist Layout Variation", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw, (int)(18 * s)), leftFmt);
+                    curY += (int)Math.Round(20 * s);
+                    int refGap = (int)Math.Round(6 * s);
+                    int stW = (sw - refGap * 2) / 3;
+                    _btnRadarStyleA = DrawButton(g, fBtn, "OPT A: TOP-DOWN", sx, curY, stW, rowH,
+                        _settings.RadarStyle == OverlapRadarLayoutStyle.OptionA_MinimalTopDown, Color.FromArgb(56, 189, 248), s);
+                    _btnRadarStyleB = DrawButton(g, fBtn, "OPT B: STRIPS", sx + stW + refGap, curY, stW, rowH,
+                        _settings.RadarStyle == OverlapRadarLayoutStyle.OptionB_ParallelStrips, Color.FromArgb(56, 189, 248), s);
+                    _btnRadarStyleC = DrawButton(g, fBtn, "OPT C: SIDE BARS", sx + (stW + refGap) * 2, curY, sw - (stW + refGap) * 2, rowH,
+                        _settings.RadarStyle == OverlapRadarLayoutStyle.OptionC_SubtleSideBars, Color.FromArgb(56, 189, 248), s);
+                    curY += rowH + gapY;
+
+                    int rngW = (optW - 8) / 3;
+                    g.DrawString("Auto-Appear Trigger Range", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnRadarRange6 = DrawButton(g, fBtn, "6.5m", rStart, curY, rngW, rowH,
+                        Math.Abs(_settings.RadarTriggerRangeMeters - 6.5f) < 0.5f, Color.FromArgb(56, 189, 248), s);
+                    _btnRadarRange85 = DrawButton(g, fBtn, "8.5m", rStart + rngW + 4, curY, rngW, rowH,
+                        Math.Abs(_settings.RadarTriggerRangeMeters - 8.5f) < 0.5f, Color.FromArgb(56, 189, 248), s);
+                    _btnRadarRange11 = DrawButton(g, fBtn, "11.0m", rStart + (rngW + 4) * 2, curY, optW - (rngW + 4) * 2, rowH,
+                        Math.Abs(_settings.RadarTriggerRangeMeters - 11.0f) < 0.5f, Color.FromArgb(56, 189, 248), s);
+                    curY += rowH + gapY;
+
+                    g.DrawString("Clear Track Behavior", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    DrawButton(g, fBtn, "100% INVISIBLE WHEN CLEAR", rStart, curY, optW, rowH, true, Color.FromArgb(100, 116, 139), s);
+                    curY += rowH + gapY;
+
+                    g.DrawString("Font Scale", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnRadarFontMinus = DrawButton(g, fBtn, "-", rStart, curY, pmW, rowH, false, Color.Gray, s);
+                    g.DrawString((int)Math.Round(_settings.RadarFontScale * 100) + "%", fMono, Brushes.White,
+                        new RectangleF(rStart + pmW, curY, valW, rowH), centerFmt);
+                    _btnRadarFontPlus = DrawButton(g, fBtn, "+", rStart + pmW + valW, curY, pmW, rowH, false, Color.Gray, s);
+                    curY += rowH + gapY;
+
+                    g.DrawString("Window Opacity", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, rowH), leftFmt);
+                    _btnRadarOpacMinus = DrawButton(g, fBtn, "-", rStart, curY, pmW, rowH, false, Color.Gray, s);
+                    g.DrawString((int)Math.Round(_settings.RadarOpacity * 100) + "%", fMono, Brushes.White,
+                        new RectangleF(rStart + pmW, curY, valW, rowH), centerFmt);
+                    _btnRadarOpacPlus = DrawButton(g, fBtn, "+", rStart + pmW + valW, curY, pmW, rowH, false, Color.Gray, s);
+
+                    _btnRadarReset = DrawButton(g, fBtn, "RESET POSITION & SIZE", sx, resetY, sw, rowH, false, Color.FromArgb(56, 189, 248), s);
+
+                    DrawOverlapRadarPreview(g, viewportRect, s);
                 }
 
                 // 4. Footer Status Bar
