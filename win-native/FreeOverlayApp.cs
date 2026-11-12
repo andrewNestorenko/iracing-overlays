@@ -11,6 +11,7 @@ using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace FreeOverlay
@@ -426,6 +427,10 @@ namespace FreeOverlay
         public float PlayerSteeringDeg;
         public float PlayerSpeedKph;
         public int PlayerGear;
+        public bool PlayerOnPitRoad;
+        public bool PlayerInWorld;
+        public float PlayerLastLapSec;
+        public float PlayerBestLapSec;
 
         // Live 60Hz Relative Gap (Ahead/Behind + Overtake Alert) & Proximity Overlap Radar
         public float GapAheadSec;
@@ -457,6 +462,10 @@ namespace FreeOverlay
             PlayerSteeringDeg = 0.0f;
             PlayerSpeedKph = 245.0f;
             PlayerGear = 5;
+            PlayerOnPitRoad = false;
+            PlayerInWorld = true;
+            PlayerLastLapSec = 0.0f;
+            PlayerBestLapSec = 0.0f;
             GapAheadSec = 1.42f;
             GapBehindSec = 1.18f;
             BehindClosingRateSecPerSec = 0.0f;
@@ -493,29 +502,125 @@ namespace FreeOverlay
     }
 
     /// <summary>
-    /// Zero-latency in-memory synthesized motorsport braking & trail-braking audio cue system.
-    /// 1) Plays a 3-beat preparatory countdown (1.05s -> 0.70s -> 0.35s) + "BRAKE NOW!" cue (0.00s).
-    /// 2) Plays continuous dynamic pitch-modulated tones during braking where pitch maps directly
-    ///    to the comparison lap's brake pressure (high pitch for peak threshold braking, descending
-    ///    low pitch for trail-braking release into the apex).
+    /// Low-latency polyphonic motorsport braking & trail-braking audio synthesizer (winmm waveOut + PlaySound fallback).
+    /// 1) Plays crisp polyphonic 3-beat preparatory countdown (1.05s -> 0.70s -> 0.35s) + "BRAKE NOW!" cue (0.00s)
+    ///    without ever getting cut off by continuous brake-pressure tones.
+    /// 2) Synthesizes a phase-continuous, click-free pitch-modulated tone during braking (245 Hz low trail-brake release
+    ///    up to 1290 Hz threshold peak, with subtle over-brake flutter when exceeding reference target).
     /// </summary>
     public static class BrakingAudioCoach
     {
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        private struct WAVEFORMATEX
+        {
+            public ushort wFormatTag;
+            public ushort nChannels;
+            public uint nSamplesPerSec;
+            public uint nAvgBytesPerSec;
+            public ushort nBlockAlign;
+            public ushort wBitsPerSample;
+            public ushort cbSize;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct WAVEHDR
+        {
+            public IntPtr lpData;
+            public uint dwBufferLength;
+            public uint dwBytesRecorded;
+            public IntPtr dwUser;
+            public uint dwFlags;
+            public uint dwLoops;
+            public IntPtr lpNext;
+            public IntPtr reserved;
+        }
+
+        private struct ActiveVoice
+        {
+            public short[] Samples;
+            public int Position;
+        }
+
         [DllImport("winmm.dll", SetLastError = true)]
         private static extern bool PlaySound(IntPtr pszSound, IntPtr hmod, uint fdwSound);
+
+        [DllImport("winmm.dll")]
+        private static extern int waveOutOpen(out IntPtr hWaveOut, uint uDeviceID, ref WAVEFORMATEX lpFormat, IntPtr dwCallback, IntPtr dwInstance, uint dwFlags);
+
+        [DllImport("winmm.dll")]
+        private static extern int waveOutPrepareHeader(IntPtr hWaveOut, IntPtr lpWaveOutHdr, int uSize);
+
+        [DllImport("winmm.dll")]
+        private static extern int waveOutUnprepareHeader(IntPtr hWaveOut, IntPtr lpWaveOutHdr, int uSize);
+
+        [DllImport("winmm.dll")]
+        private static extern int waveOutWrite(IntPtr hWaveOut, IntPtr lpWaveOutHdr, int uSize);
+
+        [DllImport("winmm.dll")]
+        private static extern int waveOutReset(IntPtr hWaveOut);
+
+        [DllImport("winmm.dll")]
+        private static extern int waveOutClose(IntPtr hWaveOut);
 
         private const uint SND_ASYNC = 0x0001;
         private const uint SND_NODEFAULT = 0x0002;
         private const uint SND_MEMORY = 0x0004;
+
+        private const uint WAVE_MAPPER = 0xFFFFFFFF;
+        private const uint CALLBACK_EVENT = 0x00050000;
+        private const uint WHDR_DONE = 0x00000001;
+
         private const int SAMPLE_RATE = 44100;
+        private const int BUFFER_COUNT = 4;
+        private const int BUFFER_SAMPLES = 882; // 20ms per buffer at 44.1 kHz
+        private const int MAX_VOICES = 6;
         private const int PRESSURE_STEPS = 24;
 
-        private static bool _initialized = false;
+        private static readonly object _initLock = new object();
+        private static readonly object _voiceLock = new object();
+
+        private static bool _clipsBuilt = false;
+        private static volatile bool _waveOutReady = false;
+        private static volatile bool _shuttingDown = false;
+        private static int _lastWaveOpenAttemptTick = 0;
+
+        private static IntPtr _hWaveOut = IntPtr.Zero;
+        private static AutoResetEvent _waveEvent = null;
+        private static Thread _mixerThread = null;
+        private static readonly IntPtr[] _hdrPtrs = new IntPtr[BUFFER_COUNT];
+        private static readonly IntPtr[] _bufPtrs = new IntPtr[BUFFER_COUNT];
+        private static int _hdrSize = 0;
+        private static int _dwFlagsOffset = 0;
+
+        // Pre-built PCM clips for polyphonic waveOut mixer
+        private static short[] _pcmPrep1;
+        private static short[] _pcmPrep2;
+        private static short[] _pcmPrep3;
+        private static short[] _pcmBrakeHeavy;
+        private static short[] _pcmBrakeLight;
+        private static short[] _pcmLapLearned;
+        private static short[] _pcmTestCadence;
+
+        private static readonly ActiveVoice[] _voices = new ActiveVoice[MAX_VOICES];
+        private static readonly short[] _mixScratch = new short[BUFFER_SAMPLES];
+
+        // Continuous phase-accumulated brake pressure & trail-brake synthesizer state
+        private static volatile bool _contActive = false;
+        private static volatile float _contTargetPct = 0f;
+        private static volatile bool _contOverBraking = false;
+        private static volatile int _lastPressureUpdateTick = 0;
+        private static double _contPhase = 0.0;
+        private static double _contLfoPhase = 0.0;
+        private static double _contAmp = 0.0;
+        private static double _contNorm = 0.0;
+
+        // Automatic PlaySound fallback buffers if waveOutOpen is unavailable
         private static GCHandle _pinPrep1;
         private static GCHandle _pinPrep2;
         private static GCHandle _pinPrep3;
         private static GCHandle _pinBrakeHeavy;
         private static GCHandle _pinBrakeLight;
+        private static GCHandle _pinLapLearned;
         private static GCHandle _pinTestCadence;
         private static readonly GCHandle[] _pinPressureTones = new GCHandle[PRESSURE_STEPS];
         private static int _lastPressurePlayTick = 0;
@@ -523,35 +628,67 @@ namespace FreeOverlay
 
         public static void EnsureInitialized()
         {
-            if (_initialized) return;
-            _initialized = true;
+            if (!_clipsBuilt)
+            {
+                lock (_initLock)
+                {
+                    if (!_clipsBuilt)
+                    {
+                        BuildAllClipsAndFallbackWavs();
+                        _clipsBuilt = true;
+                    }
+                }
+            }
+
+            if (!_waveOutReady && !_shuttingDown)
+            {
+                int now = Environment.TickCount;
+                if (_lastWaveOpenAttemptTick == 0 || (uint)(now - _lastWaveOpenAttemptTick) >= 4000u)
+                {
+                    lock (_initLock)
+                    {
+                        if (!_waveOutReady && !_shuttingDown)
+                        {
+                            _lastWaveOpenAttemptTick = now;
+                            TryOpenWaveOutStream();
+                        }
+                    }
+                }
+            }
+        }
+
+        private static void BuildAllClipsAndFallbackWavs()
+        {
             try
             {
                 // 3-step rising preparatory pips (G5 -> B5 -> D6)
-                byte[] wavPrep1 = BuildSingleToneWav(784.0, 48, 0.48, 0.25);
-                byte[] wavPrep2 = BuildSingleToneWav(988.0, 48, 0.58, 0.28);
-                byte[] wavPrep3 = BuildSingleToneWav(1175.0, 52, 0.70, 0.32);
+                _pcmPrep1 = BuildSingleTonePcm(784.0, 50, 0.56, 0.26);
+                _pcmPrep2 = BuildSingleTonePcm(988.0, 50, 0.66, 0.29);
+                _pcmPrep3 = BuildSingleTonePcm(1175.0, 54, 0.78, 0.33);
 
-                // Exact Brake Point cues (Heavy corner double-chirp vs Medium/Light single punch)
-                byte[] wavBrakeHeavy = BuildBrakeNowWav(true);
-                byte[] wavBrakeLight = BuildBrakeNowWav(false);
+                // Exact Brake Point cues (Heavy corner urgent double-chirp vs Medium/Light crisp single punch)
+                _pcmBrakeHeavy = BuildBrakeNowPcm(true);
+                _pcmBrakeLight = BuildBrakeNowPcm(false);
+
+                // Rising 2-note confirmation chime when Auto-PB Coach learns Lap 1 or a faster PB
+                _pcmLapLearned = BuildLapLearnedChimePcm();
 
                 // Full 3-2-1-BRAKE + High-to-Low Trail-Brake Pressure Sweep test sequence
-                byte[] wavTest = BuildTestSequenceWav();
+                _pcmTestCadence = BuildTestSequencePcm();
 
-                _pinPrep1 = GCHandle.Alloc(wavPrep1, GCHandleType.Pinned);
-                _pinPrep2 = GCHandle.Alloc(wavPrep2, GCHandleType.Pinned);
-                _pinPrep3 = GCHandle.Alloc(wavPrep3, GCHandleType.Pinned);
-                _pinBrakeHeavy = GCHandle.Alloc(wavBrakeHeavy, GCHandleType.Pinned);
-                _pinBrakeLight = GCHandle.Alloc(wavBrakeLight, GCHandleType.Pinned);
-                _pinTestCadence = GCHandle.Alloc(wavTest, GCHandleType.Pinned);
+                _pinPrep1 = GCHandle.Alloc(EncodePcmToWavBytes(_pcmPrep1), GCHandleType.Pinned);
+                _pinPrep2 = GCHandle.Alloc(EncodePcmToWavBytes(_pcmPrep2), GCHandleType.Pinned);
+                _pinPrep3 = GCHandle.Alloc(EncodePcmToWavBytes(_pcmPrep3), GCHandleType.Pinned);
+                _pinBrakeHeavy = GCHandle.Alloc(EncodePcmToWavBytes(_pcmBrakeHeavy), GCHandleType.Pinned);
+                _pinBrakeLight = GCHandle.Alloc(EncodePcmToWavBytes(_pcmBrakeLight), GCHandleType.Pinned);
+                _pinLapLearned = GCHandle.Alloc(EncodePcmToWavBytes(_pcmLapLearned), GCHandleType.Pinned);
+                _pinTestCadence = GCHandle.Alloc(EncodePcmToWavBytes(_pcmTestCadence), GCHandleType.Pinned);
 
-                // 24-level dynamic brake pressure / trail-braking pitch grains (260 Hz low trail -> 1360 Hz peak threshold)
                 for (int i = 0; i < PRESSURE_STEPS; i++)
                 {
-                    double norm = (double)i / (PRESSURE_STEPS - 1); // 0.0 (5% trail) .. 1.0 (100% peak)
-                    double freq = 260.0 * Math.Pow(1360.0 / 260.0, norm); // musical logarithmic pitch curve
-                    double vol = 0.26 + 0.42 * norm;
+                    double norm = (double)i / (PRESSURE_STEPS - 1);
+                    double freq = 245.0 * Math.Pow(1290.0 / 245.0, norm);
+                    double vol = 0.28 + 0.40 * norm;
                     double harm = 0.16 + 0.22 * norm;
                     byte[] grainWav = BuildSmoothGrainWav(freq, 86, vol, harm);
                     _pinPressureTones[i] = GCHandle.Alloc(grainWav, GCHandleType.Pinned);
@@ -562,11 +699,290 @@ namespace FreeOverlay
             }
         }
 
+        private static void TryOpenWaveOutStream()
+        {
+            try
+            {
+                CloseWaveOutInternal();
+
+                _waveEvent = new AutoResetEvent(false);
+                WAVEFORMATEX fmt = new WAVEFORMATEX();
+                fmt.wFormatTag = 1; // WAVE_FORMAT_PCM
+                fmt.nChannels = 1;
+                fmt.nSamplesPerSec = SAMPLE_RATE;
+                fmt.wBitsPerSample = 16;
+                fmt.nBlockAlign = 2;
+                fmt.nAvgBytesPerSec = SAMPLE_RATE * 2u;
+                fmt.cbSize = 0;
+
+                IntPtr hEvent = _waveEvent.SafeWaitHandle.DangerousGetHandle();
+                IntPtr hOut;
+                int rc = waveOutOpen(out hOut, WAVE_MAPPER, ref fmt, hEvent, IntPtr.Zero, CALLBACK_EVENT);
+                if (rc != 0 || hOut == IntPtr.Zero)
+                {
+                    if (_waveEvent != null)
+                    {
+                        _waveEvent.Close();
+                        _waveEvent = null;
+                    }
+                    return;
+                }
+
+                _hWaveOut = hOut;
+                _hdrSize = Marshal.SizeOf(typeof(WAVEHDR));
+                _dwFlagsOffset = (int)Marshal.OffsetOf(typeof(WAVEHDR), "dwFlags");
+
+                int byteLen = BUFFER_SAMPLES * 2;
+                short[] silence = new short[BUFFER_SAMPLES];
+
+                for (int i = 0; i < BUFFER_COUNT; i++)
+                {
+                    _bufPtrs[i] = Marshal.AllocHGlobal(byteLen);
+                    Marshal.Copy(silence, 0, _bufPtrs[i], BUFFER_SAMPLES);
+
+                    _hdrPtrs[i] = Marshal.AllocHGlobal(_hdrSize);
+                    WAVEHDR hdr = new WAVEHDR();
+                    hdr.lpData = _bufPtrs[i];
+                    hdr.dwBufferLength = (uint)byteLen;
+                    hdr.dwBytesRecorded = 0;
+                    hdr.dwUser = IntPtr.Zero;
+                    hdr.dwFlags = 0;
+                    hdr.dwLoops = 0;
+                    hdr.lpNext = IntPtr.Zero;
+                    hdr.reserved = IntPtr.Zero;
+                    Marshal.StructureToPtr(hdr, _hdrPtrs[i], false);
+
+                    int prepRc = waveOutPrepareHeader(_hWaveOut, _hdrPtrs[i], _hdrSize);
+                    if (prepRc != 0)
+                    {
+                        CloseWaveOutInternal();
+                        return;
+                    }
+                }
+
+                for (int i = 0; i < BUFFER_COUNT; i++)
+                {
+                    int writeRc = waveOutWrite(_hWaveOut, _hdrPtrs[i], _hdrSize);
+                    if (writeRc != 0)
+                    {
+                        CloseWaveOutInternal();
+                        return;
+                    }
+                }
+
+                _waveOutReady = true;
+                _mixerThread = new Thread(AudioMixerLoop);
+                _mixerThread.IsBackground = true;
+                _mixerThread.Name = "FreeOverlayAudioCoach";
+                _mixerThread.Priority = ThreadPriority.AboveNormal;
+                _mixerThread.Start();
+            }
+            catch
+            {
+                CloseWaveOutInternal();
+            }
+        }
+
+        private static void AudioMixerLoop()
+        {
+            try
+            {
+                while (!_shuttingDown && _waveOutReady)
+                {
+                    AutoResetEvent ev = _waveEvent;
+                    if (ev != null)
+                    {
+                        ev.WaitOne(20);
+                    }
+                    else
+                    {
+                        Thread.Sleep(10);
+                    }
+
+                    if (_shuttingDown || !_waveOutReady || _hWaveOut == IntPtr.Zero) break;
+
+                    bool deviceFault = false;
+                    for (int i = 0; i < BUFFER_COUNT; i++)
+                    {
+                        IntPtr hdrPtr = _hdrPtrs[i];
+                        if (hdrPtr == IntPtr.Zero) continue;
+
+                        uint flags = (uint)Marshal.ReadInt32(hdrPtr, _dwFlagsOffset);
+                        if ((flags & WHDR_DONE) != 0)
+                        {
+                            FillMixBuffer(_mixScratch);
+                            Marshal.Copy(_mixScratch, 0, _bufPtrs[i], BUFFER_SAMPLES);
+                            int wRc = waveOutWrite(_hWaveOut, hdrPtr, _hdrSize);
+                            if (wRc != 0)
+                            {
+                                deviceFault = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (deviceFault)
+                    {
+                        lock (_initLock)
+                        {
+                            CloseWaveOutInternal();
+                        }
+                        break;
+                    }
+                }
+            }
+            catch
+            {
+                lock (_initLock)
+                {
+                    CloseWaveOutInternal();
+                }
+            }
+        }
+
+        private static void FillMixBuffer(short[] dst)
+        {
+            Array.Clear(dst, 0, dst.Length);
+
+            bool contAlive = _contActive && ((uint)(Environment.TickCount - _lastPressureUpdateTick) <= 180u);
+            double targetPct = contAlive ? (double)_contTargetPct : 0.0;
+            bool overBrake = contAlive && _contOverBraking;
+
+            if (contAlive && targetPct >= 3.5)
+            {
+                double clamped = targetPct > 100.0 ? 100.0 : targetPct;
+                double desiredNorm = (clamped - 3.5) / 96.5;
+                double desiredAmp = 0.22 + 0.30 * desiredNorm;
+
+                for (int i = 0; i < dst.Length; i++)
+                {
+                    _contNorm += (desiredNorm - _contNorm) * 0.0045;
+                    _contAmp += (desiredAmp - _contAmp) * 0.0050;
+
+                    double freq = 245.0 * Math.Pow(1290.0 / 245.0, _contNorm);
+                    if (overBrake)
+                    {
+                        _contLfoPhase += (2.0 * Math.PI * 18.0) / SAMPLE_RATE;
+                        if (_contLfoPhase > 2.0 * Math.PI) _contLfoPhase -= 2.0 * Math.PI;
+                        freq *= (1.0 + 0.024 * Math.Sin(_contLfoPhase));
+                    }
+
+                    _contPhase += (2.0 * Math.PI * freq) / SAMPLE_RATE;
+                    if (_contPhase > 2.0 * Math.PI * 1024.0) _contPhase -= 2.0 * Math.PI * 1024.0;
+
+                    double wave = (Math.Sin(_contPhase)
+                                + 0.26 * Math.Sin(_contPhase * 2.0)
+                                + 0.14 * Math.Sin(_contPhase * 0.5)) / 1.40;
+                    double modGain = overBrake ? (0.86 + 0.14 * Math.Sin(_contLfoPhase)) : 1.0;
+                    double val = wave * _contAmp * modGain;
+                    int sVal = (int)Math.Round(val * 28000.0);
+                    if (sVal > 30000) sVal = 30000;
+                    else if (sVal < -30000) sVal = -30000;
+                    dst[i] = (short)sVal;
+                }
+            }
+            else if (_contAmp > 0.0002)
+            {
+                // Click-free smooth release fade-out when lifting off brake pedal
+                for (int i = 0; i < dst.Length; i++)
+                {
+                    _contAmp *= 0.991;
+                    if (_contAmp < 0.0001)
+                    {
+                        _contAmp = 0.0;
+                        break;
+                    }
+                    double freq = 245.0 * Math.Pow(1290.0 / 245.0, _contNorm);
+                    _contPhase += (2.0 * Math.PI * freq) / SAMPLE_RATE;
+                    double wave = (Math.Sin(_contPhase) + 0.24 * Math.Sin(_contPhase * 2.0)) / 1.24;
+                    int sVal = (int)Math.Round(wave * _contAmp * 28000.0);
+                    dst[i] = (short)Math.Max(-30000, Math.Min(30000, sVal));
+                }
+            }
+
+            // Mix polyphonic one-shot cues (3-2-1-BRAKE pips, Lap Learned chime, Test sequence) on top
+            lock (_voiceLock)
+            {
+                for (int v = 0; v < MAX_VOICES; v++)
+                {
+                    short[] clip = _voices[v].Samples;
+                    if (clip == null) continue;
+
+                    int pos = _voices[v].Position;
+                    int rem = clip.Length - pos;
+                    int count = rem < dst.Length ? rem : dst.Length;
+
+                    for (int i = 0; i < count; i++)
+                    {
+                        int mixed = (int)dst[i] + (int)clip[pos + i];
+                        if (mixed > 32200) mixed = 32200;
+                        else if (mixed < -32200) mixed = -32200;
+                        dst[i] = (short)mixed;
+                    }
+
+                    pos += count;
+                    if (pos >= clip.Length)
+                    {
+                        _voices[v].Samples = null;
+                        _voices[v].Position = 0;
+                    }
+                    else
+                    {
+                        _voices[v].Position = pos;
+                    }
+                }
+            }
+        }
+
+        private static void EnqueueVoice(short[] pcmClip, bool clearExisting)
+        {
+            if (pcmClip == null || pcmClip.Length == 0) return;
+            lock (_voiceLock)
+            {
+                if (clearExisting)
+                {
+                    for (int i = 0; i < MAX_VOICES; i++)
+                    {
+                        _voices[i].Samples = null;
+                        _voices[i].Position = 0;
+                    }
+                }
+
+                int bestSlot = 0;
+                int furthestPos = -1;
+                for (int i = 0; i < MAX_VOICES; i++)
+                {
+                    if (_voices[i].Samples == null)
+                    {
+                        bestSlot = i;
+                        furthestPos = int.MaxValue;
+                        break;
+                    }
+                    if (_voices[i].Position > furthestPos)
+                    {
+                        furthestPos = _voices[i].Position;
+                        bestSlot = i;
+                    }
+                }
+
+                _voices[bestSlot].Samples = pcmClip;
+                _voices[bestSlot].Position = 0;
+            }
+        }
+
         public static void PlayPrepBeep(int stage)
         {
             EnsureInitialized();
             try
             {
+                if (_waveOutReady)
+                {
+                    if (stage == 1) EnqueueVoice(_pcmPrep1, false);
+                    else if (stage == 2) EnqueueVoice(_pcmPrep2, false);
+                    else if (stage == 3) EnqueueVoice(_pcmPrep3, false);
+                    return;
+                }
+
                 IntPtr ptr = IntPtr.Zero;
                 if (stage == 1 && _pinPrep1.IsAllocated) ptr = _pinPrep1.AddrOfPinnedObject();
                 else if (stage == 2 && _pinPrep2.IsAllocated) ptr = _pinPrep2.AddrOfPinnedObject();
@@ -588,6 +1004,12 @@ namespace FreeOverlay
             try
             {
                 _lastBrakeCueTick = Environment.TickCount;
+                if (_waveOutReady)
+                {
+                    EnqueueVoice(heavyBraking ? _pcmBrakeHeavy : _pcmBrakeLight, false);
+                    return;
+                }
+
                 IntPtr ptr = heavyBraking
                     ? (_pinBrakeHeavy.IsAllocated ? _pinBrakeHeavy.AddrOfPinnedObject() : IntPtr.Zero)
                     : (_pinBrakeLight.IsAllocated ? _pinBrakeLight.AddrOfPinnedObject() : IntPtr.Zero);
@@ -602,23 +1024,77 @@ namespace FreeOverlay
             }
         }
 
-        /// <summary>
-        /// Plays a continuous pitch-modulated tone proportional to the reference lap's brake pressure:
-        /// High pitch (up to 1360 Hz) at peak threshold braking, descending smoothly down to 260 Hz during trail-braking.
-        /// </summary>
-        public static void PlayPressureTone(float refBrakePct)
+        public static void PlayLapLearnedChime()
         {
-            if (refBrakePct < 4.0f) return;
             EnsureInitialized();
             try
             {
+                if (_waveOutReady)
+                {
+                    EnqueueVoice(_pcmLapLearned, false);
+                    return;
+                }
+
+                if (_pinLapLearned.IsAllocated)
+                {
+                    PlaySound(_pinLapLearned.AddrOfPinnedObject(), IntPtr.Zero, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>
+        /// Updates the continuous phase-accumulated brake pressure & trail-braking oscillator.
+        /// High pitch (up to 1290 Hz) at peak threshold braking, gliding smoothly down to 245 Hz during trail-braking.
+        /// </summary>
+        public static void UpdateContinuousPressure(float brakePct, bool overBraking, bool active)
+        {
+            if (!active || brakePct < 3.5f)
+            {
+                _contActive = false;
+                _contTargetPct = 0f;
+                _contOverBraking = false;
+                return;
+            }
+
+            EnsureInitialized();
+            if (_waveOutReady)
+            {
+                _contTargetPct = Math.Max(3.5f, Math.Min(100f, brakePct));
+                _contOverBraking = overBraking;
+                _lastPressureUpdateTick = Environment.TickCount;
+                _contActive = true;
+                return;
+            }
+
+            // Fallback grain player if waveOutOpen is unavailable
+            PlayPressureToneFallback(brakePct);
+        }
+
+        public static void StopContinuousPressure()
+        {
+            _contActive = false;
+            _contTargetPct = 0f;
+            _contOverBraking = false;
+        }
+
+        public static void PlayPressureTone(float refBrakePct)
+        {
+            UpdateContinuousPressure(refBrakePct, false, refBrakePct >= 4.0f);
+        }
+
+        private static void PlayPressureToneFallback(float brakePct)
+        {
+            try
+            {
                 int now = Environment.TickCount;
-                // Let the initial "BRAKE NOW!" double-pulse finish (~135ms) before starting continuous trail-brake pitch
-                if (now - _lastBrakeCueTick < 135 && now >= _lastBrakeCueTick) return;
-                if (now - _lastPressurePlayTick < 68 && now >= _lastPressurePlayTick) return;
+                if (now - _lastBrakeCueTick < 155 && now >= _lastBrakeCueTick) return;
+                if (now - _lastPressurePlayTick < 72 && now >= _lastPressurePlayTick) return;
                 _lastPressurePlayTick = now;
 
-                float clamped = Math.Max(4.0f, Math.Min(100.0f, refBrakePct));
+                float clamped = Math.Max(4.0f, Math.Min(100.0f, brakePct));
                 int idx = (int)Math.Round(((clamped - 4.0f) / 96.0f) * (PRESSURE_STEPS - 1));
                 if (idx < 0) idx = 0;
                 else if (idx >= PRESSURE_STEPS) idx = PRESSURE_STEPS - 1;
@@ -639,6 +1115,12 @@ namespace FreeOverlay
             try
             {
                 _lastBrakeCueTick = Environment.TickCount + 2200;
+                if (_waveOutReady)
+                {
+                    EnqueueVoice(_pcmTestCadence, true);
+                    return;
+                }
+
                 if (_pinTestCadence.IsAllocated)
                 {
                     PlaySound(_pinTestCadence.AddrOfPinnedObject(), IntPtr.Zero, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
@@ -649,12 +1131,92 @@ namespace FreeOverlay
             }
         }
 
-        private static byte[] BuildSingleToneWav(double freqHz, int durationMs, double volume, double harmonicMix)
+        private static void CloseWaveOutInternal()
+        {
+            _waveOutReady = false;
+            try
+            {
+                if (_hWaveOut != IntPtr.Zero)
+                {
+                    try { waveOutReset(_hWaveOut); } catch { }
+                    for (int i = 0; i < BUFFER_COUNT; i++)
+                    {
+                        if (_hdrPtrs[i] != IntPtr.Zero && _hdrSize > 0)
+                        {
+                            try { waveOutUnprepareHeader(_hWaveOut, _hdrPtrs[i], _hdrSize); } catch { }
+                        }
+                    }
+                    try { waveOutClose(_hWaveOut); } catch { }
+                    _hWaveOut = IntPtr.Zero;
+                }
+            }
+            catch
+            {
+            }
+
+            for (int i = 0; i < BUFFER_COUNT; i++)
+            {
+                if (_hdrPtrs[i] != IntPtr.Zero)
+                {
+                    try { Marshal.FreeHGlobal(_hdrPtrs[i]); } catch { }
+                    _hdrPtrs[i] = IntPtr.Zero;
+                }
+                if (_bufPtrs[i] != IntPtr.Zero)
+                {
+                    try { Marshal.FreeHGlobal(_bufPtrs[i]); } catch { }
+                    _bufPtrs[i] = IntPtr.Zero;
+                }
+            }
+
+            if (_waveEvent != null)
+            {
+                try { _waveEvent.Close(); } catch { }
+                _waveEvent = null;
+            }
+        }
+
+        public static void Shutdown()
+        {
+            _shuttingDown = true;
+            _contActive = false;
+            try
+            {
+                AutoResetEvent ev = _waveEvent;
+                if (ev != null) ev.Set();
+                Thread t = _mixerThread;
+                if (t != null && t.IsAlive)
+                {
+                    t.Join(250);
+                }
+            }
+            catch
+            {
+            }
+
+            lock (_initLock)
+            {
+                CloseWaveOutInternal();
+            }
+        }
+
+        private static short[] BuildSingleTonePcm(double freqHz, int durationMs, double volume, double harmonicMix)
         {
             int numSamples = (SAMPLE_RATE * durationMs) / 1000;
             short[] pcm = new short[numSamples];
             SynthesizeToneInto(pcm, 0, numSamples, freqHz, volume, harmonicMix);
-            return EncodePcmToWavBytes(pcm);
+            return pcm;
+        }
+
+        private static short[] BuildLapLearnedChimePcm()
+        {
+            int totalSamples = (SAMPLE_RATE * 195) / 1000;
+            short[] pcm = new short[totalSamples];
+            int n1 = (SAMPLE_RATE * 75) / 1000;
+            int n2Start = (SAMPLE_RATE * 82) / 1000;
+            int n2 = totalSamples - n2Start;
+            SynthesizeToneInto(pcm, 0, n1, 880.0, 0.52, 0.22);
+            SynthesizeToneInto(pcm, n2Start, n2, 1318.5, 0.62, 0.25);
+            return pcm;
         }
 
         private static byte[] BuildSmoothGrainWav(double freqHz, int durationMs, double volume, double harmonicMix)
@@ -682,11 +1244,11 @@ namespace FreeOverlay
             return EncodePcmToWavBytes(pcm);
         }
 
-        private static byte[] BuildBrakeNowWav(bool heavy)
+        private static short[] BuildBrakeNowPcm(bool heavy)
         {
             if (heavy)
             {
-                // Urgent F1/GT3 double-pulse at exact braking spot (52ms G6 + 10ms gap + 78ms A6/G6)
+                // Urgent F1/GT3 double-pulse at exact braking spot (52ms G6 + 8ms gap + 80ms A6)
                 int totalMs = 140;
                 int totalSamples = (SAMPLE_RATE * totalMs) / 1000;
                 short[] pcm = new short[totalSamples];
@@ -697,28 +1259,28 @@ namespace FreeOverlay
 
                 SynthesizeToneInto(pcm, 0, p1Samples, 1568.0, 0.88, 0.42);
                 SynthesizeToneInto(pcm, p2Start, p2Samples, 1760.0, 0.94, 0.45);
-                return EncodePcmToWavBytes(pcm);
+                return pcm;
             }
             else
             {
                 int totalSamples = (SAMPLE_RATE * 100) / 1000;
                 short[] pcm = new short[totalSamples];
                 SynthesizeToneInto(pcm, 0, totalSamples, 1568.0, 0.82, 0.38);
-                return EncodePcmToWavBytes(pcm);
+                return pcm;
             }
         }
 
-        private static byte[] BuildTestSequenceWav()
+        private static short[] BuildTestSequencePcm()
         {
             // Full 3-2-1-BRAKE cadence (0ms, 350ms, 700ms, 1050ms) followed by a 900ms High-to-Low Trail-Brake Pitch Sweep
             int totalMs = 2120;
             int totalSamples = (SAMPLE_RATE * totalMs) / 1000;
             short[] pcm = new short[totalSamples];
 
-            int pipLen = (SAMPLE_RATE * 48) / 1000;
-            SynthesizeToneInto(pcm, 0, pipLen, 784.0, 0.48, 0.25);
-            SynthesizeToneInto(pcm, (SAMPLE_RATE * 350) / 1000, pipLen, 988.0, 0.58, 0.28);
-            SynthesizeToneInto(pcm, (SAMPLE_RATE * 700) / 1000, (SAMPLE_RATE * 52) / 1000, 1175.0, 0.70, 0.32);
+            int pipLen = (SAMPLE_RATE * 50) / 1000;
+            SynthesizeToneInto(pcm, 0, pipLen, 784.0, 0.56, 0.26);
+            SynthesizeToneInto(pcm, (SAMPLE_RATE * 350) / 1000, pipLen, 988.0, 0.66, 0.29);
+            SynthesizeToneInto(pcm, (SAMPLE_RATE * 700) / 1000, (SAMPLE_RATE * 54) / 1000, 1175.0, 0.78, 0.33);
 
             int brkStart = (SAMPLE_RATE * 1050) / 1000;
             int p1Samples = (SAMPLE_RATE * 52) / 1000;
@@ -727,7 +1289,7 @@ namespace FreeOverlay
             SynthesizeToneInto(pcm, brkStart, p1Samples, 1568.0, 0.88, 0.42);
             SynthesizeToneInto(pcm, p2Start, p2Samples, 1760.0, 0.94, 0.45);
 
-            // Continuous phase-accumulated Peak Pressure (1340 Hz) -> Trail-Brake Release (270 Hz) sweep
+            // Continuous phase-accumulated Peak Pressure (1290 Hz) -> Trail-Brake Release (245 Hz) sweep
             int sweepStart = (SAMPLE_RATE * 1210) / 1000;
             int sweepLen = totalSamples - sweepStart;
             double phase = 0.0;
@@ -736,12 +1298,11 @@ namespace FreeOverlay
             for (int i = 0; i < sweepLen; i++)
             {
                 double prog = (double)i / Math.Max(1, sweepLen - 1);
-                // Hold high threshold pressure for first 22%, then trail-brake down to apex release
                 double pressureNorm = prog < 0.22
                     ? (0.92 + 0.08 * Math.Sin((prog / 0.22) * Math.PI * 0.5))
                     : Math.Pow(Math.Max(0.0, 1.0 - (prog - 0.22) / 0.78), 1.35);
 
-                double freq = 265.0 * Math.Pow(1350.0 / 265.0, pressureNorm);
+                double freq = 245.0 * Math.Pow(1290.0 / 245.0, pressureNorm);
                 phase += (2.0 * Math.PI * freq) / SAMPLE_RATE;
 
                 double env = 1.0;
@@ -754,7 +1315,7 @@ namespace FreeOverlay
                 pcm[sweepStart + i] = (short)Math.Round(val * 30000.0);
             }
 
-            return EncodePcmToWavBytes(pcm);
+            return pcm;
         }
 
         private static void SynthesizeToneInto(short[] buffer, int offset, int length, double freqHz, double volume, double harmonicMix)
@@ -776,10 +1337,7 @@ namespace FreeOverlay
                     env = 0.5 * (1.0 - Math.Cos(Math.PI * Math.Max(0, rem) / releaseSamples));
                 }
 
-                // Slight natural exponential punch
                 double punch = Math.Exp(-1.6 * ((double)i / length));
-
-                // Fundamental + octave sub-reinforcement + 2nd harmonic for cockpit clarity
                 double w = 2.0 * Math.PI * freqHz * t;
                 double wave = Math.Sin(w)
                             + harmonicMix * Math.Sin(w * 2.0)
@@ -799,22 +1357,19 @@ namespace FreeOverlay
             int dataBytes = pcm.Length * 2;
             byte[] wav = new byte[44 + dataBytes];
 
-            // RIFF header
             wav[0] = (byte)'R'; wav[1] = (byte)'I'; wav[2] = (byte)'F'; wav[3] = (byte)'F';
             WriteInt32LE(wav, 4, 36 + dataBytes);
             wav[8] = (byte)'W'; wav[9] = (byte)'A'; wav[10] = (byte)'V'; wav[11] = (byte)'E';
 
-            // fmt subchunk
             wav[12] = (byte)'f'; wav[13] = (byte)'m'; wav[14] = (byte)'t'; wav[15] = (byte)' ';
-            WriteInt32LE(wav, 16, 16);             // Subchunk1Size (16 for PCM)
-            WriteInt16LE(wav, 20, 1);              // AudioFormat (1 = PCM)
-            WriteInt16LE(wav, 22, 1);              // NumChannels (1 = mono)
-            WriteInt32LE(wav, 24, SAMPLE_RATE);    // SampleRate
-            WriteInt32LE(wav, 28, SAMPLE_RATE * 2);// ByteRate
-            WriteInt16LE(wav, 32, 2);              // BlockAlign
-            WriteInt16LE(wav, 34, 16);             // BitsPerSample
+            WriteInt32LE(wav, 16, 16);
+            WriteInt16LE(wav, 20, 1);
+            WriteInt16LE(wav, 22, 1);
+            WriteInt32LE(wav, 24, SAMPLE_RATE);
+            WriteInt32LE(wav, 28, SAMPLE_RATE * 2);
+            WriteInt16LE(wav, 32, 2);
+            WriteInt16LE(wav, 34, 16);
 
-            // data subchunk
             wav[36] = (byte)'d'; wav[37] = (byte)'a'; wav[38] = (byte)'t'; wav[39] = (byte)'a';
             WriteInt32LE(wav, 40, dataBytes);
 
@@ -844,6 +1399,8 @@ namespace FreeOverlay
         public string DriverName = "M. Van Der Berg";
         public float RefLapTimeSec = 136.412f;
         public string SourceLabel = "Built-in Spa GT3 Pro Lap";
+        public bool HasReferenceLap = true;
+        public int LearningProgressPct = 0;
 
         public readonly float[] RefBrake = new float[BUCKETS];
         public readonly float[] RefThrottle = new float[BUCKETS];
@@ -855,6 +1412,25 @@ namespace FreeOverlay
         public readonly float[] PlayerThrottleTrace = new float[BUCKETS];
         public readonly float[] PlayerSteeringTrace = new float[BUCKETS];
 
+        // Candidate lap recorder for automatic per-track+car Personal Best coaching
+        private readonly float[] _recBrake = new float[BUCKETS];
+        private readonly float[] _recThrottle = new float[BUCKETS];
+        private readonly float[] _recSpeedKph = new float[BUCKETS];
+        private readonly float[] _recSteerDeg = new float[BUCKETS];
+        private readonly int[] _recGear = new int[BUCKETS];
+        private readonly bool[] _recVisited = new bool[BUCKETS];
+        private int _recVisitedCount = 0;
+        private bool _recCleanOnTrack = false;
+        private bool _recCrossedStartLine = false;
+        private bool _isBootstrapOutLap = false;
+        private long _recLapStartTimestamp = 0;
+
+        private string _activeContextKey = "__MOCK_SPA__";
+        private string _activeDiskTrackKey = "";
+        private string _activeCarClassLabel = "CAR";
+        private string _loadedCsvPath = "";
+        private bool _isAutoModeActive = false;
+
         public readonly List<BrakingZoneInfo> Zones = new List<BrakingZoneInfo>();
         public readonly List<CornerAuditItem> Audits = new List<CornerAuditItem>();
 
@@ -862,6 +1438,8 @@ namespace FreeOverlay
         private float _lastPlayerBrake = 0f;
         private float _lastPlayerThrottle = 0f;
         private float _lastPlayerSteer = 0f;
+        private float _lastPlayerSpeed = 0f;
+        private int _lastPlayerGear = 3;
         private bool _playerBrakingInZone = false;
         private int _activeZoneIdx = -1;
         public float CurrentBrakeSpotDeltaMeters = 0f;
@@ -886,8 +1464,224 @@ namespace FreeOverlay
             BuildDefaultSpaReferenceLap();
         }
 
+        public static string FormatLapTimeStatic(float sec)
+        {
+            if (sec <= 0.5f || sec >= 999f) return "--:--.---";
+            int mins = (int)(sec / 60f);
+            float rem = sec - mins * 60f;
+            return string.Format(CultureInfo.InvariantCulture, "{0}:{1:00.000}", mins, rem);
+        }
+
+        private static string SanitizeFileKey(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return "unknown";
+            StringBuilder sb = new StringBuilder(raw.Length);
+            for (int i = 0; i < raw.Length; i++)
+            {
+                char c = raw[i];
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
+                {
+                    sb.Append(char.ToLowerInvariant(c));
+                }
+                else if (sb.Length > 0 && sb[sb.Length - 1] != '_')
+                {
+                    sb.Append('_');
+                }
+            }
+            string res = sb.ToString().Trim('_');
+            return string.IsNullOrEmpty(res) ? "track" : res;
+        }
+
+        private static string GetAutoLapFilePath(string diskTrackKey)
+        {
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "FreeOverlay",
+                "laps"
+            );
+            return Path.Combine(dir, diskTrackKey + ".lap");
+        }
+
+        private void ResetLapRecorder()
+        {
+            Array.Clear(_recVisited, 0, BUCKETS);
+            _recVisitedCount = 0;
+            _recCleanOnTrack = false;
+            _recCrossedStartLine = false;
+            _recLapStartTimestamp = 0;
+            LearningProgressPct = 0;
+        }
+
+        public void SyncSessionContext(string trackName, string carClass, bool isLiveSource, string csvPath)
+        {
+            if (!string.IsNullOrEmpty(csvPath))
+            {
+                if (_loadedCsvPath != csvPath)
+                {
+                    if (LoadFromCsvFile(csvPath))
+                    {
+                        _loadedCsvPath = csvPath;
+                        _activeContextKey = "CSV:" + csvPath;
+                        _isAutoModeActive = false;
+                        return;
+                    }
+                }
+                else
+                {
+                    return;
+                }
+            }
+
+            _loadedCsvPath = "";
+
+            if (!isLiveSource)
+            {
+                if (_activeContextKey != "__MOCK_SPA__")
+                {
+                    BuildDefaultSpaReferenceLap();
+                }
+                return;
+            }
+
+            // Live iRacing session without manual CSV override -> Auto-PB Coach per Track + Car
+            if (string.IsNullOrEmpty(trackName) || trackName.StartsWith("Waiting for iRacing", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            string cleanCar = string.IsNullOrEmpty(carClass) ? "CAR" : carClass.Trim();
+            string diskKey = SanitizeFileKey(trackName) + "__" + SanitizeFileKey(cleanCar);
+            string ctxKey = "LIVE:" + diskKey;
+            if (_activeContextKey == ctxKey) return;
+
+            _activeContextKey = ctxKey;
+            _activeDiskTrackKey = diskKey;
+            _activeCarClassLabel = cleanCar;
+            _isAutoModeActive = true;
+            _isBootstrapOutLap = false;
+            _lastBucket = -1;
+            _audioZoneNumber = -1;
+            _audioStageFired = 0;
+            CurrentAudioStage = 0;
+            HasCurrentBrakeSpotDelta = false;
+            Array.Clear(PlayerBrakeTrace, 0, BUCKETS);
+            Array.Clear(PlayerThrottleTrace, 0, BUCKETS);
+            Array.Clear(PlayerSteeringTrace, 0, BUCKETS);
+            ResetLapRecorder();
+
+            if (!TryLoadAutoLapFromDisk(diskKey, cleanCar))
+            {
+                // Start clean unlearned state for this new track+car so fake Spa corners never beep
+                Zones.Clear();
+                Audits.Clear();
+                HasReferenceLap = false;
+                RefLapTimeSec = 999f;
+                DriverName = "Auto Coach";
+                SourceLabel = string.Format(CultureInfo.InvariantCulture, "AUTO COACH ({0}): LEARNING LAP 1...", cleanCar);
+                for (int i = 0; i < BUCKETS; i++)
+                {
+                    RefBrake[i] = 0f;
+                    RefThrottle[i] = 100f;
+                    RefSpeedKph[i] = 180f;
+                    RefSteeringDeg[i] = 0f;
+                    RefGear[i] = 4;
+                }
+            }
+        }
+
+        public void ResetToAutoOrDefault(bool isLiveSource, string trackName, string carClass)
+        {
+            _loadedCsvPath = "";
+            _activeContextKey = "";
+            if (isLiveSource)
+            {
+                SyncSessionContext(trackName, carClass, true, "");
+            }
+            else
+            {
+                BuildDefaultSpaReferenceLap();
+            }
+        }
+
+        private bool TryLoadAutoLapFromDisk(string diskKey, string carLabel)
+        {
+            try
+            {
+                string path = GetAutoLapFilePath(diskKey);
+                if (!File.Exists(path)) return false;
+                byte[] bytes = File.ReadAllBytes(path);
+                int expectedMin = 12 + BUCKETS * 18;
+                if (bytes.Length < expectedMin) return false;
+
+                using (MemoryStream ms = new MemoryStream(bytes))
+                using (BinaryReader br = new BinaryReader(ms))
+                {
+                    int magic = br.ReadInt32();
+                    int buckets = br.ReadInt32();
+                    float lapSec = br.ReadSingle();
+                    if (magic != 0x464F4C50 || buckets != BUCKETS || lapSec <= 10f || lapSec >= 900f)
+                        return false;
+
+                    for (int i = 0; i < BUCKETS; i++)
+                    {
+                        RefBrake[i] = br.ReadSingle();
+                        RefThrottle[i] = br.ReadSingle();
+                        RefSpeedKph[i] = br.ReadSingle();
+                        RefSteeringDeg[i] = br.ReadSingle();
+                        RefGear[i] = br.ReadInt16();
+                    }
+
+                    RefLapTimeSec = lapSec;
+                    HasReferenceLap = true;
+                    _isBootstrapOutLap = false;
+                    DriverName = "Personal Best";
+                    SourceLabel = string.Format(CultureInfo.InvariantCulture, "AUTO PB ({0}): {1}", carLabel, FormatLapTimeStatic(lapSec));
+                    RebuildZonesFromRefTrace(false);
+                    return Zones.Count > 0;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void SaveAutoLapToDisk(string diskKey, float lapSec)
+        {
+            if (string.IsNullOrEmpty(diskKey) || lapSec <= 10f || lapSec >= 900f) return;
+            try
+            {
+                string path = GetAutoLapFilePath(diskKey);
+                string dir = Path.GetDirectoryName(path);
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+
+                using (FileStream fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read))
+                using (BinaryWriter bw = new BinaryWriter(fs))
+                {
+                    bw.Write(0x464F4C50); // 'FOLP' magic
+                    bw.Write(BUCKETS);
+                    bw.Write(lapSec);
+                    for (int i = 0; i < BUCKETS; i++)
+                    {
+                        bw.Write(RefBrake[i]);
+                        bw.Write(RefThrottle[i]);
+                        bw.Write(RefSpeedKph[i]);
+                        bw.Write(RefSteeringDeg[i]);
+                        bw.Write((short)RefGear[i]);
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
         public void BuildDefaultSpaReferenceLap()
         {
+            _activeContextKey = "__MOCK_SPA__";
+            _isAutoModeActive = false;
+            _isBootstrapOutLap = false;
+            HasReferenceLap = true;
             DriverName = "M. Van Der Berg";
             RefLapTimeSec = 136.412f;
             SourceLabel = "G61: M. Van Der Berg (2:16.412)";
@@ -1114,6 +1908,11 @@ namespace FreeOverlay
                 }
 
                 RebuildZonesFromRefTrace(colSteer < 0 || maxSteerAbsSeen < 0.005f);
+                HasReferenceLap = Zones.Count > 0;
+                _isAutoModeActive = false;
+                _isBootstrapOutLap = false;
+                _loadedCsvPath = filePath;
+                _activeContextKey = "CSV:" + filePath;
                 DriverName = !string.IsNullOrEmpty(customLabel) ? customLabel : Path.GetFileNameWithoutExtension(filePath);
                 SourceLabel = !string.IsNullOrEmpty(customLabel) ? customLabel : ("G61 CSV: " + DriverName);
                 return true;
@@ -1128,6 +1927,18 @@ namespace FreeOverlay
         {
             Zones.Clear();
             Audits.Clear();
+
+            // 5-bucket circular smoothing so minor pedal modulation jitter doesn't fragment a corner
+            float[] smoothBrk = new float[BUCKETS];
+            for (int i = 0; i < BUCKETS; i++)
+            {
+                int im2 = (i - 2 + BUCKETS) % BUCKETS;
+                int im1 = (i - 1 + BUCKETS) % BUCKETS;
+                int ip1 = (i + 1) % BUCKETS;
+                int ip2 = (i + 2) % BUCKETS;
+                smoothBrk[i] = (RefBrake[im2] + RefBrake[im1] * 2f + RefBrake[i] * 3f + RefBrake[ip1] * 2f + RefBrake[ip2]) / 9.0f;
+            }
+
             bool inZone = false;
             int startIdx = 0;
             int peakIdx = 0;
@@ -1137,45 +1948,75 @@ namespace FreeOverlay
 
             for (int i = 0; i < BUCKETS; i++)
             {
-                float b = RefBrake[i];
-                if (!inZone && b >= 8.0f)
+                float sb = smoothBrk[i];
+                float rawB = RefBrake[i];
+                if (!inZone && sb >= 9.0f)
                 {
                     inZone = true;
-                    startIdx = i;
+                    // Backtrack up to 6 buckets to locate exact initial pedal touch (>= 4.0%)
+                    int touchIdx = i;
+                    for (int back = 1; back <= 6 && (i - back) >= 0; back++)
+                    {
+                        if (RefBrake[i - back] >= 4.0f) touchIdx = i - back;
+                        else break;
+                    }
+                    startIdx = touchIdx;
                     peakIdx = i;
-                    peakBrk = b;
+                    peakBrk = rawB > sb ? rawB : sb;
                     minSpd = RefSpeedKph[i];
-                    minG = RefGear[i];
+                    minG = RefGear[i] > 0 ? RefGear[i] : 6;
                 }
                 else if (inZone)
                 {
-                    if (b > peakBrk)
+                    float candPk = rawB > sb ? rawB : sb;
+                    if (candPk > peakBrk)
                     {
-                        peakBrk = b;
+                        peakBrk = candPk;
                         peakIdx = i;
                     }
-                    if (RefSpeedKph[i] < minSpd) minSpd = RefSpeedKph[i];
+                    if (RefSpeedKph[i] > 5f && RefSpeedKph[i] < minSpd) minSpd = RefSpeedKph[i];
                     if (RefGear[i] > 0 && RefGear[i] < minG) minG = RefGear[i];
 
-                    if (b < 3.0f || i == BUCKETS - 1)
+                    if (sb < 3.5f || i == BUCKETS - 1)
                     {
                         inZone = false;
-                        if (i - startIdx >= 6 && peakBrk >= 15.0f)
+                        if (i - startIdx >= 5 && peakBrk >= 15.0f)
                         {
+                            float newStartPct = (float)startIdx / BUCKETS;
+                            float newPeakPct = (float)peakIdx / BUCKETS;
+                            float newEndPct = (float)i / BUCKETS;
+
+                            // Merge if immediately adjacent (< 1.2% lap gap) to previous braking zone (e.g. double-apex modulation)
+                            if (Zones.Count > 0 && (newStartPct - Zones[Zones.Count - 1].EndPct) < 0.012f)
+                            {
+                                BrakingZoneInfo prev = Zones[Zones.Count - 1];
+                                prev.EndPct = newEndPct;
+                                if (peakBrk > prev.PeakBrake)
+                                {
+                                    prev.PeakBrake = peakBrk;
+                                    prev.PeakPct = newPeakPct;
+                                }
+                                if (minSpd < prev.MinSpeedKph) prev.MinSpeedKph = minSpd;
+                                if (minG < prev.MinGear) prev.MinGear = minG;
+                                Audits[Audits.Count - 1].RefPeakBrake = prev.PeakBrake;
+                                Audits[Audits.Count - 1].PlayerPeakBrake = prev.PeakBrake;
+                                continue;
+                            }
+
                             BrakingZoneInfo z = new BrakingZoneInfo();
                             z.ZoneNumber = Zones.Count + 1;
                             z.Name = "Corner " + z.ZoneNumber;
-                            z.StartPct = (float)startIdx / BUCKETS;
-                            z.PeakPct = (float)peakIdx / BUCKETS;
-                            z.EndPct = (float)i / BUCKETS;
+                            z.StartPct = newStartPct;
+                            z.PeakPct = newPeakPct;
+                            z.EndPct = newEndPct;
                             z.PeakBrake = peakBrk;
-                            z.MinSpeedKph = minSpd;
+                            z.MinSpeedKph = minSpd < 900f ? minSpd : 100f;
                             z.MinGear = minG;
 
                             if (synthesizeSteeringIfMissing)
                             {
                                 float dir = (z.ZoneNumber % 2 == 1) ? 1.0f : -1.0f;
-                                float synthLock = dir * Math.Max(38f, Math.Min(98f, 115f - minSpd * 0.35f));
+                                float synthLock = dir * Math.Max(38f, Math.Min(98f, 115f - z.MinSpeedKph * 0.35f));
                                 z.PeakSteerDeg = synthLock;
                                 int turnIn = Math.Max(startIdx, peakIdx + (int)((i - peakIdx) * 0.18f));
                                 int unwind = Math.Min(BUCKETS - 1, i + 20);
@@ -1213,6 +2054,74 @@ namespace FreeOverlay
                         }
                     }
                 }
+            }
+        }
+
+        private void PromoteRecordedLapToReference(float completedLapSec, bool isBootstrapPartial, bool playChime)
+        {
+            // Fill any tiny unvisited bucket gaps smoothly before promoting
+            int firstValid = -1;
+            for (int i = 0; i < BUCKETS; i++)
+            {
+                if (_recVisited[i])
+                {
+                    firstValid = i;
+                    break;
+                }
+            }
+            if (firstValid < 0) return;
+
+            float curB = isBootstrapPartial ? 0f : _recBrake[firstValid];
+            float curT = isBootstrapPartial ? 100f : _recThrottle[firstValid];
+            float curS = _recSpeedKph[firstValid] > 10f ? _recSpeedKph[firstValid] : 160f;
+            float curSt = isBootstrapPartial ? 0f : _recSteerDeg[firstValid];
+            int curG = _recGear[firstValid] > 0 ? _recGear[firstValid] : 4;
+
+            for (int i = 0; i < BUCKETS; i++)
+            {
+                if (_recVisited[i])
+                {
+                    curB = _recBrake[i];
+                    curT = _recThrottle[i];
+                    curS = _recSpeedKph[i];
+                    curSt = _recSteerDeg[i];
+                    curG = _recGear[i] > 0 ? _recGear[i] : curG;
+                }
+                else if (isBootstrapPartial && i < firstValid)
+                {
+                    curB = 0f;
+                    curT = 100f;
+                    curSt = 0f;
+                }
+
+                RefBrake[i] = curB;
+                RefThrottle[i] = curT;
+                RefSpeedKph[i] = curS;
+                RefSteeringDeg[i] = curSt;
+                RefGear[i] = curG;
+            }
+
+            RebuildZonesFromRefTrace(false);
+            if (Zones.Count == 0) return;
+
+            HasReferenceLap = true;
+            _isBootstrapOutLap = isBootstrapPartial;
+            if (!isBootstrapPartial && completedLapSec > 10f && completedLapSec < 900f)
+            {
+                RefLapTimeSec = completedLapSec;
+                DriverName = "Personal Best";
+                SourceLabel = string.Format(CultureInfo.InvariantCulture, "AUTO PB ({0}): {1}", _activeCarClassLabel, FormatLapTimeStatic(completedLapSec));
+                SaveAutoLapToDisk(_activeDiskTrackKey, completedLapSec);
+            }
+            else
+            {
+                DriverName = "Out-Lap Learned";
+                SourceLabel = string.Format(CultureInfo.InvariantCulture, "AUTO COACH ({0}): OUT-LAP READY", _activeCarClassLabel);
+            }
+
+            if (playChime)
+            {
+                BrakingAudioCoach.PlayLapLearnedChime();
             }
         }
 
@@ -1272,12 +2181,12 @@ namespace FreeOverlay
 
         public void UpdatePlayerTelemetry(float distPct, float playerBrake, float playerThrottle, float trackLengthMeters)
         {
-            UpdatePlayerTelemetry(distPct, playerBrake, playerThrottle, 0f, trackLengthMeters, 200f, false, false);
+            UpdatePlayerTelemetry(distPct, playerBrake, playerThrottle, 0f, trackLengthMeters, 200f, 4, false, true, 0f, false, false);
         }
 
         public void UpdatePlayerTelemetry(float distPct, float playerBrake, float playerThrottle, float trackLengthMeters, float playerSpeedKph, bool playAudioCues)
         {
-            UpdatePlayerTelemetry(distPct, playerBrake, playerThrottle, 0f, trackLengthMeters, playerSpeedKph, playAudioCues, false);
+            UpdatePlayerTelemetry(distPct, playerBrake, playerThrottle, 0f, trackLengthMeters, playerSpeedKph, 4, false, true, 0f, playAudioCues, false);
         }
 
         public void UpdatePlayerTelemetry(
@@ -1290,21 +2199,58 @@ namespace FreeOverlay
             bool playCountdownAudio,
             bool playPressureAudio)
         {
+            UpdatePlayerTelemetry(distPct, playerBrake, playerThrottle, playerSteerDeg, trackLengthMeters, playerSpeedKph, 4, false, true, 0f, playCountdownAudio, playPressureAudio);
+        }
+
+        public void UpdatePlayerTelemetry(
+            float distPct,
+            float playerBrake,
+            float playerThrottle,
+            float playerSteerDeg,
+            float trackLengthMeters,
+            float playerSpeedKph,
+            int playerGear,
+            bool isOnPitRoad,
+            bool isInWorld,
+            float playerLastLapSec,
+            bool playCountdownAudio,
+            bool playPressureAudio)
+        {
             float wrapped = distPct - (float)Math.Floor(distPct);
             int b = Math.Max(0, Math.Min(BUCKETS - 1, (int)(wrapped * BUCKETS)));
+            int prevBucket = _lastBucket;
 
-            if (_lastBucket >= 0 && b != _lastBucket)
+            if (prevBucket >= 0 && b != prevBucket)
             {
-                int fwdDiff = (b - _lastBucket + BUCKETS) % BUCKETS;
-                if (fwdDiff >= 1 && fwdDiff <= 60)
+                int fwdDiff = (b - prevBucket + BUCKETS) % BUCKETS;
+                if (fwdDiff >= 1 && fwdDiff <= 80)
                 {
                     for (int s = 1; s <= fwdDiff; s++)
                     {
-                        int step = (_lastBucket + s) % BUCKETS;
+                        int step = (prevBucket + s) % BUCKETS;
                         float t = (float)s / fwdDiff;
-                        PlayerBrakeTrace[step] = _lastPlayerBrake + (playerBrake - _lastPlayerBrake) * t;
-                        PlayerThrottleTrace[step] = _lastPlayerThrottle + (playerThrottle - _lastPlayerThrottle) * t;
-                        PlayerSteeringTrace[step] = _lastPlayerSteer + (playerSteerDeg - _lastPlayerSteer) * t;
+                        float brkStep = _lastPlayerBrake + (playerBrake - _lastPlayerBrake) * t;
+                        float thrStep = _lastPlayerThrottle + (playerThrottle - _lastPlayerThrottle) * t;
+                        float stStep = _lastPlayerSteer + (playerSteerDeg - _lastPlayerSteer) * t;
+                        float spdStep = _lastPlayerSpeed + (playerSpeedKph - _lastPlayerSpeed) * t;
+
+                        PlayerBrakeTrace[step] = brkStep;
+                        PlayerThrottleTrace[step] = thrStep;
+                        PlayerSteeringTrace[step] = stStep;
+
+                        if (_isAutoModeActive && !isOnPitRoad && isInWorld)
+                        {
+                            _recBrake[step] = brkStep;
+                            _recThrottle[step] = thrStep;
+                            _recSteerDeg[step] = stStep;
+                            _recSpeedKph[step] = spdStep;
+                            _recGear[step] = playerGear > 0 ? playerGear : _lastPlayerGear;
+                            if (!_recVisited[step])
+                            {
+                                _recVisited[step] = true;
+                                _recVisitedCount++;
+                            }
+                        }
                     }
                 }
                 else
@@ -1312,6 +2258,11 @@ namespace FreeOverlay
                     PlayerBrakeTrace[b] = playerBrake;
                     PlayerThrottleTrace[b] = playerThrottle;
                     PlayerSteeringTrace[b] = playerSteerDeg;
+                    // Discontinuity (teleport / reset to pits) invalidates current candidate lap
+                    if (_isAutoModeActive)
+                    {
+                        ResetLapRecorder();
+                    }
                 }
             }
             else
@@ -1319,15 +2270,106 @@ namespace FreeOverlay
                 PlayerBrakeTrace[b] = playerBrake;
                 PlayerThrottleTrace[b] = playerThrottle;
                 PlayerSteeringTrace[b] = playerSteerDeg;
+                if (_isAutoModeActive && !isOnPitRoad && isInWorld)
+                {
+                    _recBrake[b] = playerBrake;
+                    _recThrottle[b] = playerThrottle;
+                    _recSteerDeg[b] = playerSteerDeg;
+                    _recSpeedKph[b] = playerSpeedKph;
+                    _recGear[b] = playerGear;
+                    if (!_recVisited[b])
+                    {
+                        _recVisited[b] = true;
+                        _recVisitedCount++;
+                    }
+                }
             }
+
+            // Automatic per-track+car Lap Learning & Personal Best Promotion across Start/Finish
+            if (_isAutoModeActive)
+            {
+                if (isOnPitRoad || !isInWorld)
+                {
+                    if (_recCleanOnTrack || _recVisitedCount > 0)
+                    {
+                        ResetLapRecorder();
+                    }
+                }
+                else
+                {
+                    if (!_recCleanOnTrack)
+                    {
+                        _recCleanOnTrack = true;
+                        _recLapStartTimestamp = Stopwatch.GetTimestamp();
+                    }
+
+                    LearningProgressPct = Math.Min(99, (_recVisitedCount * 100) / BUCKETS);
+
+                    // Detect clean forward Start/Finish line wrap (e.g. 0.96+ -> 0.00..0.05)
+                    if (prevBucket >= 1880 && b <= 120)
+                    {
+                        long nowTs = Stopwatch.GetTimestamp();
+                        float measuredSec = _recLapStartTimestamp > 0
+                            ? (float)((double)(nowTs - _recLapStartTimestamp) / Stopwatch.Frequency)
+                            : 0f;
+                        float officialSec = (playerLastLapSec > 12f && playerLastLapSec < 600f && Math.Abs(playerLastLapSec - measuredSec) < 4.0f)
+                            ? playerLastLapSec
+                            : measuredSec;
+
+                        bool fullCleanLap = _recCrossedStartLine && _recVisitedCount >= (int)(BUCKETS * 0.84f) && officialSec > 12f && officialSec < 600f;
+                        bool cleanOutLapBootstrap = !HasReferenceLap && _recVisitedCount >= (int)(BUCKETS * 0.72f);
+
+                        if (fullCleanLap)
+                        {
+                            if (!HasReferenceLap || _isBootstrapOutLap || officialSec < RefLapTimeSec - 0.015f)
+                            {
+                                PromoteRecordedLapToReference(officialSec, false, playCountdownAudio || playPressureAudio);
+                            }
+                        }
+                        else if (cleanOutLapBootstrap)
+                        {
+                            PromoteRecordedLapToReference(0f, true, playCountdownAudio || playPressureAudio);
+                        }
+
+                        // Begin recording next clean flying lap from S/F
+                        Array.Clear(_recVisited, 0, BUCKETS);
+                        _recVisitedCount = 0;
+                        _recCrossedStartLine = true;
+                        _recCleanOnTrack = true;
+                        _recLapStartTimestamp = nowTs;
+                        LearningProgressPct = 0;
+                    }
+                    else if (!HasReferenceLap)
+                    {
+                        SourceLabel = string.Format(
+                            CultureInfo.InvariantCulture,
+                            "AUTO COACH ({0}): LEARNING LAP ({1}%)",
+                            _activeCarClassLabel,
+                            LearningProgressPct
+                        );
+                    }
+                }
+            }
+
             _lastBucket = b;
             _lastPlayerBrake = playerBrake;
             _lastPlayerThrottle = playerThrottle;
             _lastPlayerSteer = playerSteerDeg;
+            _lastPlayerSpeed = playerSpeedKph;
+            if (playerGear > 0) _lastPlayerGear = playerGear;
+
+            // Suppress audio cues while in pit lane or outside the car
+            if (isOnPitRoad || !isInWorld)
+            {
+                CurrentAudioStage = 0;
+                CurrentTimeToBrakeSec = 99f;
+                BrakingAudioCoach.StopContinuousPressure();
+                return;
+            }
 
             float safeTrackLen = Math.Max(1000f, trackLengthMeters);
-            float refBrkNow = GetRefBrakeAtPct(wrapped);
-            float refSteerNow = GetRefSteeringAtPct(wrapped);
+            float refBrkNow = HasReferenceLap ? GetRefBrakeAtPct(wrapped) : 0f;
+            float refSteerNow = HasReferenceLap ? GetRefSteeringAtPct(wrapped) : 0f;
 
             CurrentRefSteerDeg = refSteerNow;
             CurrentPlayerSteerDeg = playerSteerDeg;
@@ -1336,7 +2378,12 @@ namespace FreeOverlay
             CurrentSteerDeltaDeg = absYouSt - absRefSt;
 
             // Evaluate Pro Race Driving Coach Steering & Trail-Brake Line Cue
-            if (absRefSt < 8.0f && absYouSt < 8.0f)
+            if (!HasReferenceLap)
+            {
+                CurrentSteerCoachCue = string.Format(CultureInfo.InvariantCulture, "LEARNING LINE ({0}%)", LearningProgressPct);
+                CurrentSteerCoachStatus = 0;
+            }
+            else if (absRefSt < 8.0f && absYouSt < 8.0f)
             {
                 CurrentSteerCoachCue = "STRAIGHT LINE";
                 CurrentSteerCoachStatus = 0;
@@ -1364,10 +2411,10 @@ namespace FreeOverlay
 
             // Evaluate approaching braking zone for Audio & Visual Countdown Cues
             float distToStartMeters;
-            BrakingZoneInfo relZone = GetRelevantZone(distPct, out distToStartMeters, safeTrackLen);
+            BrakingZoneInfo relZone = HasReferenceLap ? GetRelevantZone(distPct, out distToStartMeters, safeTrackLen) : null;
             if (relZone != null)
             {
-                float speedMps = Math.Max(18.0f, playerSpeedKph / 3.6f);
+                float speedMps = Math.Max(14.0f, playerSpeedKph / 3.6f);
                 float timeToStartSec = distToStartMeters / speedMps;
                 CurrentTimeToBrakeSec = timeToStartSec;
 
@@ -1376,7 +2423,7 @@ namespace FreeOverlay
                     _audioZoneNumber = relZone.ZoneNumber;
                     _audioStageFired = 0;
                 }
-                else if (distToStartMeters > 150.0f && _audioStageFired >= 4)
+                else if (distToStartMeters > 140.0f && _audioStageFired >= 4)
                 {
                     _audioStageFired = 0;
                 }
@@ -1403,18 +2450,18 @@ namespace FreeOverlay
                     CurrentAudioStage = 0;
                 }
 
-                // Fire rhythmic 3-2-1-BRAKE audio cues (350ms beat spacing leading into exact brake spot)
-                if (playCountdownAudio && playerSpeedKph >= 35.0f)
+                // Fire zero-gap rhythmic 3-2-1-BRAKE audio cues (350ms beat spacing leading into exact brake spot)
+                if (playCountdownAudio && playerSpeedKph >= 30.0f)
                 {
-                    if ((distToStartMeters <= 2.2f || timeToStartSec <= 0.035f) && distToStartMeters >= -16.0f)
+                    if ((distToStartMeters <= 2.5f || timeToStartSec <= 0.04f) && distToStartMeters >= -22.0f)
                     {
                         if (_audioStageFired < 4)
                         {
                             _audioStageFired = 4;
-                            BrakingAudioCoach.PlayBrakeNow(relZone.PeakBrake >= 55.0f);
+                            BrakingAudioCoach.PlayBrakeNow(relZone.PeakBrake >= 50.0f);
                         }
                     }
-                    else if (distToStartMeters > 2.2f && timeToStartSec <= 0.36f && timeToStartSec > 0.07f)
+                    else if (distToStartMeters > 2.5f && timeToStartSec <= 0.36f)
                     {
                         if (_audioStageFired < 3)
                         {
@@ -1422,7 +2469,7 @@ namespace FreeOverlay
                             BrakingAudioCoach.PlayPrepBeep(3);
                         }
                     }
-                    else if (distToStartMeters > 2.2f && timeToStartSec <= 0.72f && timeToStartSec > 0.40f)
+                    else if (distToStartMeters > 2.5f && timeToStartSec <= 0.72f)
                     {
                         if (_audioStageFired < 2)
                         {
@@ -1430,7 +2477,7 @@ namespace FreeOverlay
                             BrakingAudioCoach.PlayPrepBeep(2);
                         }
                     }
-                    else if (distToStartMeters > 2.2f && timeToStartSec <= 1.08f && timeToStartSec > 0.75f)
+                    else if (distToStartMeters > 2.5f && timeToStartSec <= 1.08f)
                     {
                         if (_audioStageFired < 1)
                         {
@@ -1439,12 +2486,6 @@ namespace FreeOverlay
                         }
                     }
                 }
-
-                // Fire dynamic pitch-modulated brake pressure / trail-braking audio while reference lap is braking
-                if (playPressureAudio && playerSpeedKph >= 30.0f && refBrkNow >= 4.5f)
-                {
-                    BrakingAudioCoach.PlayPressureTone(refBrkNow);
-                }
             }
             else
             {
@@ -1452,7 +2493,35 @@ namespace FreeOverlay
                 CurrentTimeToBrakeSec = 99f;
             }
 
-            // Find current or approaching braking zone
+            // Continuous dynamic pitch-modulated brake pressure & trail-braking audio:
+            // Tracks live brake pedal pressure whenever applied (so pedal modulation & Lap 1 learning always respond),
+            // and plays reference braking target curve inside reference braking zones, with over-brake flutter if > +14% over target.
+            if (playPressureAudio)
+            {
+                float tonePct = 0f;
+                bool overBraking = false;
+
+                if (playerBrake >= 4.0f)
+                {
+                    tonePct = playerBrake;
+                    if (HasReferenceLap && refBrkNow >= 6.0f && playerBrake > refBrkNow + 14.0f)
+                    {
+                        overBraking = true;
+                    }
+                }
+                else if (HasReferenceLap && playerSpeedKph >= 28.0f && refBrkNow >= 4.5f)
+                {
+                    tonePct = refBrkNow;
+                }
+
+                BrakingAudioCoach.UpdateContinuousPressure(tonePct, overBraking, tonePct >= 4.0f);
+            }
+            else
+            {
+                BrakingAudioCoach.StopContinuousPressure();
+            }
+
+            // Find current or approaching braking zone for Corner Audit tracking
             int foundZone = -1;
             for (int i = 0; i < Zones.Count; i++)
             {
@@ -3400,6 +4469,10 @@ namespace FreeOverlay
                     }
                 }
 
+                bool playerOnPitLive = (_offCarIdxOnPit >= 0 && playerCarIdx >= 0 && playerCarIdx < _cntCarIdxOnPit)
+                    ? (_dataBuf[_offCarIdxOnPit + playerCarIdx] != 0)
+                    : false;
+
                 SessionSnapshot snap = new SessionSnapshot();
                 snap.Connected = true;
                 snap.IsLiveSource = true;
@@ -3420,6 +4493,10 @@ namespace FreeOverlay
                 snap.PlayerSteeringDeg = Math.Max(-180f, Math.Min(180f, -playerSteerRad * 57.29578f));
                 snap.PlayerSpeedKph = Math.Max(0f, playerSpeedMs * 3.6f);
                 snap.PlayerGear = playerGearVal;
+                snap.PlayerInWorld = (playerTrackSurface >= 0);
+                snap.PlayerOnPitRoad = playerOnPitLive || (playerTrackSurface == 1) || (playerTrackSurface == 2);
+                snap.PlayerLastLapSec = lapLastLapTime;
+                snap.PlayerBestLapSec = lapBestLapTime;
                 snap.GapAheadSec = gapAheadSec;
                 snap.GapBehindSec = gapBehindSec;
                 snap.BehindClosingRateSecPerSec = _smoothedBehindClosingRate;
@@ -5435,6 +6512,7 @@ namespace FreeOverlay
         private Rectangle _rectStyleCycleBtn;
         private Rectangle _rectAudioToggleBtn;
         private Rectangle _rectPressureAudioBtn;
+        private Rectangle _rectAudioTestBtn;
         private Rectangle _rectSteerToggleBtn;
 
         private const int GRAPH_SAMPLES = 72;
@@ -5695,6 +6773,16 @@ namespace FreeOverlay
                     {
                         BrakingAudioCoach.PlayTestSequence();
                     }
+                    else
+                    {
+                        BrakingAudioCoach.StopContinuousPressure();
+                    }
+                    Invalidate();
+                    return;
+                }
+                if (_rectAudioTestBtn.Contains(pt))
+                {
+                    BrakingAudioCoach.PlayTestSequence();
                     Invalidate();
                     return;
                 }
@@ -5797,7 +6885,7 @@ namespace FreeOverlay
                 Cursor = Cursors.SizeNWSE;
             else if (hc == DragCorner.TopRight || hc == DragCorner.BottomLeft)
                 Cursor = Cursors.SizeNESW;
-            else if (_rectCornerModeBtn.Contains(e.Location) || _rectStyleCycleBtn.Contains(e.Location) || _rectAudioToggleBtn.Contains(e.Location) || _rectPressureAudioBtn.Contains(e.Location) || _rectSteerToggleBtn.Contains(e.Location))
+            else if (_rectCornerModeBtn.Contains(e.Location) || _rectStyleCycleBtn.Contains(e.Location) || _rectAudioToggleBtn.Contains(e.Location) || _rectPressureAudioBtn.Contains(e.Location) || _rectAudioTestBtn.Contains(e.Location) || _rectSteerToggleBtn.Contains(e.Location))
                 Cursor = Cursors.Hand;
             else
                 Cursor = Cursors.Default;
@@ -5818,14 +6906,51 @@ namespace FreeOverlay
 
         private void DrawBrakingBanner(Graphics g, Rectangle rect, float nowPct, float youBrk, float g61Brk, float trackLen, Font fBold, Font fMono, float s)
         {
+            StringFormat leftFmt = _leftFmt;
+            StringFormat rightFmt = _rightFmt;
+
+            if (_snapshot != null && (_snapshot.PlayerOnPitRoad || !_snapshot.PlayerInWorld))
+            {
+                using (SolidBrush bg = new SolidBrush(Color.FromArgb(24, 28, 38))) g.FillRectangle(bg, rect);
+                using (Pen bp = new Pen(Color.FromArgb(100, 245, 158, 11), 1f)) g.DrawRectangle(bp, rect);
+                using (SolidBrush ab = new SolidBrush(Color.FromArgb(251, 191, 36)))
+                {
+                    g.DrawString("PIT LANE / GARAGE  •  AUDIO CUES PAUSED UNTIL ON TRACK", fBold, ab,
+                        new RectangleF(rect.Left + 8 * s, rect.Top, rect.Width * 0.72f, rect.Height), leftFmt);
+                }
+                string liveBrk = string.Format(CultureInfo.InvariantCulture, "BRAKE: {0:0}%", youBrk);
+                g.DrawString(liveBrk, fMono, Brushes.Gainsboro,
+                    new RectangleF(rect.Right - rect.Width * 0.28f, rect.Top, rect.Width * 0.28f - 8 * s, rect.Height), rightFmt);
+                return;
+            }
+
+            if (!_g61.HasReferenceLap)
+            {
+                using (SolidBrush bg = new SolidBrush(Color.FromArgb(18, 28, 40))) g.FillRectangle(bg, rect);
+                using (Pen bp = new Pen(Color.FromArgb(120, 56, 189, 248), 1f)) g.DrawRectangle(bp, rect);
+                string learnTxt = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "LEARNING TRACK ({0}%)  •  DRIVE 1 CLEAN LAP TO UNLOCK BRAKE BEEPS",
+                    _g61.LearningProgressPct
+                );
+                using (SolidBrush cb = new SolidBrush(Color.FromArgb(125, 211, 252)))
+                {
+                    g.DrawString(learnTxt, fBold, cb,
+                        new RectangleF(rect.Left + 8 * s, rect.Top, rect.Width * 0.72f, rect.Height), leftFmt);
+                }
+                string livePedalTxt = string.Format(CultureInfo.InvariantCulture, "LIVE BRAKE: {0:0}%", youBrk);
+                using (SolidBrush pb = new SolidBrush(youBrk >= 4f ? Color.FromArgb(251, 113, 133) : Color.FromArgb(156, 163, 175)))
+                {
+                    g.DrawString(livePedalTxt, fMono, pb,
+                        new RectangleF(rect.Right - rect.Width * 0.28f, rect.Top, rect.Width * 0.28f - 8 * s, rect.Height), rightFmt);
+                }
+                return;
+            }
+
             float distToStart;
             BrakingZoneInfo z = _g61.GetRelevantZone(nowPct, out distToStart, trackLen);
             float peakTarget = z != null ? z.PeakBrake : 84f;
             string zName = z != null ? z.Name : "Corner";
-
-            StringFormat leftFmt = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
-            StringFormat rightFmt = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center };
-            StringFormat centerFmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
 
             if (distToStart > 3.0f && distToStart <= 260.0f)
             {
@@ -6287,7 +7412,7 @@ namespace FreeOverlay
                     g.DrawString(_settings.Garage61AudioEnabled ? "BEEP: ON" : "BEEP: OFF", fSmall, af, _rectAudioToggleBtn, centerFmt);
                 }
 
-                int tonePillW = (int)Math.Round(86 * s);
+                int tonePillW = (int)Math.Round(76 * s);
                 _rectPressureAudioBtn = new Rectangle(_rectAudioToggleBtn.Right + pillGap, topY, tonePillW, topBarH);
                 Color toneBg = _settings.Garage61PressureAudioEnabled ? Color.FromArgb(45, 245, 158, 11) : Color.FromArgb(30, 107, 114, 128);
                 Color toneBorder = _settings.Garage61PressureAudioEnabled ? Color.FromArgb(160, 251, 191, 36) : Color.FromArgb(80, 156, 163, 175);
@@ -6299,8 +7424,17 @@ namespace FreeOverlay
                     g.DrawString(_settings.Garage61PressureAudioEnabled ? "PITCH: ON" : "PITCH: OFF", fSmall, tf, _rectPressureAudioBtn, centerFmt);
                 }
 
-                int steerPillW = (int)Math.Round(72 * s);
-                _rectSteerToggleBtn = new Rectangle(_rectPressureAudioBtn.Right + pillGap, topY, steerPillW, topBarH);
+                int testPillW = (int)Math.Round(42 * s);
+                _rectAudioTestBtn = new Rectangle(_rectPressureAudioBtn.Right + pillGap, topY, testPillW, topBarH);
+                using (SolidBrush tsb = new SolidBrush(Color.FromArgb(38, 56, 189, 248))) g.FillRectangle(tsb, _rectAudioTestBtn);
+                using (Pen tsp = new Pen(Color.FromArgb(145, 56, 189, 248), 1f)) g.DrawRectangle(tsp, _rectAudioTestBtn);
+                using (SolidBrush tsf = new SolidBrush(Color.FromArgb(125, 211, 252)))
+                {
+                    g.DrawString("TEST", fSmall, tsf, _rectAudioTestBtn, centerFmt);
+                }
+
+                int steerPillW = (int)Math.Round(70 * s);
+                _rectSteerToggleBtn = new Rectangle(_rectAudioTestBtn.Right + pillGap, topY, steerPillW, topBarH);
                 Color stBg = _settings.Garage61ShowSteering ? Color.FromArgb(45, 168, 85, 247) : Color.FromArgb(30, 107, 114, 128);
                 Color stBorder = _settings.Garage61ShowSteering ? Color.FromArgb(160, 192, 132, 252) : Color.FromArgb(80, 156, 163, 175);
                 Color stFg = _settings.Garage61ShowSteering ? Color.FromArgb(216, 180, 254) : Color.FromArgb(156, 163, 175);
@@ -8062,6 +9196,7 @@ namespace FreeOverlay
             if (_relativeGapForm != null) _relativeGapForm.SaveGeometry();
             if (_radarForm != null) _radarForm.SaveGeometry();
             _settings.Save();
+            BrakingAudioCoach.Shutdown();
             timeEndPeriod(1);
             UnregisterHotKey(Handle, HOTKEY_HUB);
             UnregisterHotKey(Handle, HOTKEY_LOCK);
@@ -8084,6 +9219,7 @@ namespace FreeOverlay
             if (_radarForm != null) _radarForm.SaveGeometry();
             _settings.Save();
             _timer.Stop();
+            BrakingAudioCoach.Shutdown();
             timeEndPeriod(1);
             if (_trayIcon != null) _trayIcon.Visible = false;
             Application.Exit();
@@ -8139,6 +9275,7 @@ namespace FreeOverlay
             }
             else
             {
+                BrakingAudioCoach.StopContinuousPressure();
                 if (_garage61Form.Visible) _garage61Form.Hide();
             }
 
@@ -8210,18 +9347,38 @@ namespace FreeOverlay
 
             if (_settings.Garage61Enabled)
             {
+                _g61Manager.SyncSessionContext(
+                    snap.TrackName,
+                    snap.CarClassShortName,
+                    snap.IsLiveSource,
+                    _settings.Garage61CsvPath
+                );
+
                 bool allowAudio = _settings.Garage61AudioEnabled && snap.Connected;
                 bool allowPressureAudio = _settings.Garage61PressureAudioEnabled && snap.Connected;
+                if (!snap.Connected)
+                {
+                    BrakingAudioCoach.StopContinuousPressure();
+                }
+
                 _g61Manager.UpdatePlayerTelemetry(
                     snap.PlayerLapDistPct,
                     snap.PlayerBrakePct,
                     snap.PlayerThrottlePct,
+                    snap.PlayerSteeringDeg,
                     snap.TrackLengthMeters,
                     snap.PlayerSpeedKph,
-                    snap.PlayerSteeringDeg,
+                    snap.PlayerGear,
+                    snap.PlayerOnPitRoad,
+                    snap.PlayerInWorld,
+                    snap.PlayerLastLapSec,
                     allowAudio,
                     allowPressureAudio
                 );
+            }
+            else
+            {
+                BrakingAudioCoach.StopContinuousPressure();
             }
 
             // Repaint fast HUD overlays at 30 FPS (every 2nd tick = 32ms) while sampling telemetry & audio at 60 Hz
@@ -8607,6 +9764,10 @@ namespace FreeOverlay
                     {
                         BrakingAudioCoach.PlayTestSequence();
                     }
+                    else
+                    {
+                        BrakingAudioCoach.StopContinuousPressure();
+                    }
                     return;
                 }
                 if (_btnG61AudioTest.Contains(pt))
@@ -8646,7 +9807,10 @@ namespace FreeOverlay
                 if (_btnG61DefaultLap.Contains(pt))
                 {
                     _settings.Garage61CsvPath = "";
-                    _g61Manager.BuildDefaultSpaReferenceLap();
+                    bool isLive = (_lastSnapshot != null && _lastSnapshot.IsLiveSource);
+                    string trk = (_lastSnapshot != null) ? _lastSnapshot.TrackName : "";
+                    string cls = (_lastSnapshot != null) ? _lastSnapshot.CarClassShortName : "";
+                    _g61Manager.ResetToAutoOrDefault(isLive, trk, cls);
                     _settings.NotifyChanged();
                     return;
                 }
@@ -10118,11 +11282,11 @@ namespace FreeOverlay
                         _settings.Garage61LookaheadMeters == 180, Color.FromArgb(56, 189, 248), s);
                     curY += gRowH + gGapY;
 
-                    g.DrawString("Reference Lap CSV", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, gRowH), leftFmt);
-                    int csvW = (int)Math.Round(optW * 0.65f);
+                    g.DrawString("Reference Lap Source", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, gRowH), leftFmt);
+                    int csvW = (int)Math.Round(optW * 0.62f);
                     int defW = optW - csvW - 4;
-                    _btnG61LoadCsv = DrawButton(g, fBtn, "LOAD CSV...", rStart, curY, csvW, gRowH, true, Color.FromArgb(34, 197, 94), s);
-                    _btnG61DefaultLap = DrawButton(g, fBtn, "SPA", rStart + csvW + 4, curY, defW, gRowH, string.IsNullOrEmpty(_settings.Garage61CsvPath), Color.FromArgb(56, 189, 248), s);
+                    _btnG61LoadCsv = DrawButton(g, fBtn, "LOAD CSV...", rStart, curY, csvW, gRowH, !string.IsNullOrEmpty(_settings.Garage61CsvPath), Color.FromArgb(34, 197, 94), s);
+                    _btnG61DefaultLap = DrawButton(g, fBtn, "AUTO PB", rStart + csvW + 4, curY, defW, gRowH, string.IsNullOrEmpty(_settings.Garage61CsvPath), Color.FromArgb(56, 189, 248), s);
                     curY += gRowH + gGapY;
 
                     g.DrawString("Font Scale", fLabel, Brushes.Gainsboro, new RectangleF(sx, curY, sw - optW, gRowH), leftFmt);
