@@ -409,6 +409,7 @@ namespace FreeOverlay
         public bool IsLiveSource;
         public string TrackName;
         public string SessionType;
+        public string CarClassShortName;
         public int StrengthOfField;
         public int CurrentLap;
         public int TotalLaps;
@@ -441,6 +442,7 @@ namespace FreeOverlay
         {
             TrackName = "Circuit de Spa-Francorchamps";
             SessionType = "RACE";
+            CarClassShortName = "GT3";
             StrengthOfField = 3451;
             CurrentLap = 8;
             TotalLaps = 20;
@@ -2245,6 +2247,7 @@ namespace FreeOverlay
         {
             public int CarIdx;
             public int CarClassId;
+            public string CarClassShortName;
             public string CarNumber;
             public string UserName;
             public string ClubName;
@@ -2282,13 +2285,17 @@ namespace FreeOverlay
         private string _cachedYaml = string.Empty;
         private string _cachedTrackName = "iRacing Circuit";
         private string _cachedSessionType = "RACE";
+        private string _cachedPlayerClassShortName = "GT3";
         private float _cachedTrackLenMeters = 5000f;
         private float[] _cachedSectorPcts = new float[] { 0.0f, 0.333333f, 0.666667f };
         private readonly List<CachedYamlDriver> _cachedYamlDrivers = new List<CachedYamlDriver>();
         private readonly Dictionary<int, CachedResultEntry> _cachedYamlResults = new Dictionary<int, CachedResultEntry>();
+        private readonly Dictionary<int, CachedResultEntry> _cachedQualResults = new Dictionary<int, CachedResultEntry>();
         private readonly int[] _bestKnownPos = new int[64];
         private readonly float[] _bestKnownBestLap = new float[64];
         private readonly float[] _bestKnownLastLap = new float[64];
+        private readonly int[] _qualifyingPos = new int[64];
+        private readonly float[] _qualifyingBestLap = new float[64];
         private List<DriverRow> _cachedSortedDrivers = new List<DriverRow>();
         private int _cachedSof = 1500;
         private int _cachedMaxLap = 1;
@@ -2383,9 +2390,39 @@ namespace FreeOverlay
         {
             int end = offset;
             int limit = Math.Min(buf.Length, offset + maxLen);
-            while (end < limit && buf[end] != 0) end++;
+            bool hasHighByte = false;
+            bool validUtf8 = true;
+            int utf8Cont = 0;
+
+            while (end < limit && buf[end] != 0)
+            {
+                byte b = buf[end];
+                if (b >= 0x80)
+                {
+                    hasHighByte = true;
+                    if (utf8Cont > 0)
+                    {
+                        if ((b & 0xC0) == 0x80) utf8Cont--;
+                        else validUtf8 = false;
+                    }
+                    else if ((b & 0xE0) == 0xC0) utf8Cont = 1;
+                    else if ((b & 0xF0) == 0xE0) utf8Cont = 2;
+                    else if ((b & 0xF8) == 0xF0) utf8Cont = 3;
+                    else validUtf8 = false;
+                }
+                else if (utf8Cont > 0)
+                {
+                    validUtf8 = false;
+                    utf8Cont = 0;
+                }
+                end++;
+            }
+            if (utf8Cont != 0) validUtf8 = false;
             if (end <= offset) return string.Empty;
-            return Encoding.ASCII.GetString(buf, offset, end - offset);
+            int count = end - offset;
+            if (!hasHighByte) return Encoding.ASCII.GetString(buf, offset, count);
+            if (validUtf8) return Encoding.UTF8.GetString(buf, offset, count);
+            return Encoding.GetEncoding(28591).GetString(buf, offset, count);
         }
 
         private static string ExtractYamlField(string chunk, string key, string defVal)
@@ -2447,17 +2484,32 @@ namespace FreeOverlay
             return "RACE";
         }
 
-        private void RefreshSessionResultsFromYaml(string yaml, int sessionNum)
+        private static void ParseResultsPositionsBlock(string chunkWithResults, Dictionary<int, CachedResultEntry> target, bool allowZeroBasedPosition)
         {
-            _cachedYamlResults.Clear();
-            string activeChunk = ExtractActiveSessionChunkFromYaml(yaml, sessionNum);
-            if (string.IsNullOrEmpty(activeChunk)) return;
-
-            int resIdx = activeChunk.IndexOf("ResultsPositions:");
+            if (string.IsNullOrEmpty(chunkWithResults)) return;
+            int resIdx = chunkWithResults.IndexOf("ResultsPositions:");
+            if (resIdx < 0) resIdx = chunkWithResults.IndexOf("Results:");
             if (resIdx < 0) return;
 
-            string resSection = activeChunk.Substring(resIdx);
+            string resSection = chunkWithResults.Substring(resIdx);
             string[] blocks = Regex.Split(resSection, @"\r?\n[ \t]*-[ \t]*Position:");
+            if (blocks.Length <= 1) return;
+
+            int posOffset = 0;
+            if (allowZeroBasedPosition)
+            {
+                for (int i = 1; i < blocks.Length; i++)
+                {
+                    string chunk = "Position:" + blocks[i];
+                    int rawPos;
+                    if (int.TryParse(ExtractYamlField(chunk, "Position", "-1"), out rawPos) && rawPos == 0)
+                    {
+                        posOffset = 1;
+                        break;
+                    }
+                }
+            }
+
             for (int i = 1; i < blocks.Length; i++)
             {
                 string chunk = "Position:" + blocks[i];
@@ -2466,12 +2518,59 @@ namespace FreeOverlay
                 if (cIdx < 0 || cIdx >= 64) continue;
 
                 CachedResultEntry re = new CachedResultEntry();
-                int.TryParse(ExtractYamlField(chunk, "Position", "0"), out re.Position);
+                int rawPos = -1;
+                int.TryParse(ExtractYamlField(chunk, "Position", "-1"), out rawPos);
+                re.Position = rawPos >= 0 ? (rawPos + posOffset) : 0;
                 int.TryParse(ExtractYamlField(chunk, "ClassPosition", "-1"), out re.ClassPosition);
                 float.TryParse(ExtractYamlField(chunk, "FastestTime", "-1"), NumberStyles.Float, CultureInfo.InvariantCulture, out re.FastestTime);
                 float.TryParse(ExtractYamlField(chunk, "LastTime", "-1"), NumberStyles.Float, CultureInfo.InvariantCulture, out re.LastTime);
                 int.TryParse(ExtractYamlField(chunk, "LapsComplete", "0"), out re.LapsComplete);
-                _cachedYamlResults[cIdx] = re;
+
+                CachedResultEntry existing;
+                if (target.TryGetValue(cIdx, out existing))
+                {
+                    if (re.Position <= 0 && existing.Position > 0) re.Position = existing.Position;
+                    if (re.FastestTime <= 0f && existing.FastestTime > 0f) re.FastestTime = existing.FastestTime;
+                    if (re.LastTime <= 0f && existing.LastTime > 0f) re.LastTime = existing.LastTime;
+                    if (re.LapsComplete <= 0 && existing.LapsComplete > 0) re.LapsComplete = existing.LapsComplete;
+                }
+                target[cIdx] = re;
+            }
+        }
+
+        private void RefreshSessionResultsFromYaml(string yaml, int sessionNum)
+        {
+            _cachedYamlResults.Clear();
+            _cachedQualResults.Clear();
+
+            // 1. Parse top-level QualifyResultsInfo (0-based Position in iRacing YAML: 0 = P1)
+            string qualInfoSection = ExtractTopLevelYamlSection(yaml, "QualifyResultsInfo");
+            if (!string.IsNullOrEmpty(qualInfoSection))
+            {
+                ParseResultsPositionsBlock(qualInfoSection, _cachedQualResults, true);
+            }
+
+            // 2. Also scan SessionInfo -> Sessions for any QUAL session's ResultsPositions (1-based Position)
+            string sessionInfo = ExtractTopLevelYamlSection(yaml, "SessionInfo");
+            if (!string.IsNullOrEmpty(sessionInfo))
+            {
+                string[] sessionBlocks = Regex.Split(sessionInfo, @"(?:^|\r?\n)[ \t]*-[ \t]*SessionNum:");
+                for (int i = 1; i < sessionBlocks.Length; i++)
+                {
+                    string chunk = "SessionNum:" + sessionBlocks[i];
+                    string sType = ExtractYamlField(chunk, "SessionType", string.Empty);
+                    if (sType.IndexOf("Qual", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        ParseResultsPositionsBlock(chunk, _cachedQualResults, false);
+                    }
+                }
+            }
+
+            // 3. Parse active session ResultsPositions
+            string activeChunk = ExtractActiveSessionChunkFromYaml(yaml, sessionNum);
+            if (!string.IsNullOrEmpty(activeChunk))
+            {
+                ParseResultsPositionsBlock(activeChunk, _cachedYamlResults, false);
             }
         }
 
@@ -2585,6 +2684,20 @@ namespace FreeOverlay
 
                 int carClassId = 0;
                 int.TryParse(ExtractYamlField(chunk, "CarClassID", "0"), out carClassId);
+                string classShort = ExtractYamlField(chunk, "CarClassShortName", string.Empty);
+                if (string.IsNullOrEmpty(classShort))
+                    classShort = ExtractYamlField(chunk, "CarScreenNameShort", string.Empty);
+                if (string.IsNullOrEmpty(classShort))
+                    classShort = ExtractYamlField(chunk, "CarPath", string.Empty);
+                if (!string.IsNullOrEmpty(classShort))
+                {
+                    classShort = classShort.Trim().ToUpperInvariant();
+                    if (classShort.Length > 7) classShort = classShort.Substring(0, 7).Trim();
+                }
+                else
+                {
+                    classShort = "GT3";
+                }
 
                 string licRaw = ExtractYamlField(chunk, "LicString", "R 2.50");
                 string licClass = "R";
@@ -2607,6 +2720,7 @@ namespace FreeOverlay
                 CachedYamlDriver cd = new CachedYamlDriver();
                 cd.CarIdx = cIdx;
                 cd.CarClassId = carClassId;
+                cd.CarClassShortName = classShort;
                 cd.CarNumber = ExtractYamlField(chunk, "CarNumber", cIdx.ToString());
                 cd.UserName = userName;
                 cd.ClubName = displayClub;
@@ -2848,15 +2962,27 @@ namespace FreeOverlay
                     {
                         CachedYamlDriver cd = _cachedYamlDrivers[i];
                         int cIdx = cd.CarIdx;
-                        if (cIdx == playerCarIdx) playerCarClassId = cd.CarClassId;
+                        if (cIdx == playerCarIdx)
+                        {
+                            playerCarClassId = cd.CarClassId;
+                            if (!string.IsNullOrEmpty(cd.CarClassShortName))
+                                _cachedPlayerClassShortName = cd.CarClassShortName;
+                        }
 
                         CachedResultEntry yamlRes;
                         bool hasYamlRes = _cachedYamlResults.TryGetValue(cIdx, out yamlRes);
+                        CachedResultEntry qualRes;
+                        bool hasQualRes = _cachedQualResults.TryGetValue(cIdx, out qualRes);
 
                         int livePos = _pos[cIdx];
                         if (livePos > 0) _bestKnownPos[cIdx] = livePos;
                         else if (hasYamlRes && yamlRes.Position > 0) livePos = yamlRes.Position;
                         else if (_bestKnownPos[cIdx] > 0) livePos = _bestKnownPos[cIdx];
+                        else if (isRaceSession)
+                        {
+                            if (hasQualRes && qualRes.Position > 0) livePos = qualRes.Position;
+                            else if (_qualifyingPos[cIdx] > 0) livePos = _qualifyingPos[cIdx];
+                        }
 
                         float bLap = _bestLap[cIdx];
                         float lLap = _lastLap[cIdx];
@@ -2877,9 +3003,20 @@ namespace FreeOverlay
                         {
                             bLap = _bestKnownBestLap[cIdx];
                         }
+                        else if (isRaceSession)
+                        {
+                            if (hasQualRes && qualRes.FastestTime > 0f) bLap = qualRes.FastestTime;
+                            else if (_qualifyingBestLap[cIdx] > 0f) bLap = _qualifyingBestLap[cIdx];
+                        }
 
                         if (lLap > 0f) _bestKnownLastLap[cIdx] = lLap;
                         else if (_bestKnownLastLap[cIdx] > 0f) lLap = _bestKnownLastLap[cIdx];
+
+                        if (sessionType == "QUAL")
+                        {
+                            if (livePos > 0) _qualifyingPos[cIdx] = livePos;
+                            if (bLap > 0f) _qualifyingBestLap[cIdx] = bLap;
+                        }
 
                         if (bLap > 0f && bLap < sessionBest) sessionBest = bLap;
 
@@ -2918,7 +3055,7 @@ namespace FreeOverlay
                         row.IRating = cd.IRating;
                         row.LicClass = cd.LicClass;
                         row.SafetyRating = cd.SafetyRating;
-                        row.LastLapSec = lLap > 0f ? lLap : 0f;
+                        row.LastLapSec = lLap > 0f ? lLap : ((isRaceSession && curLap <= 1 && bLap > 0f) ? bLap : 0f);
                         row.BestLapSec = bLap > 0f ? bLap : 0f;
                         row.GapToLeaderSec = Math.Max(0f, _f2Time[cIdx]);
                         row.Lap = curLap;
@@ -2954,7 +3091,7 @@ namespace FreeOverlay
                                     return prevRankA.CompareTo(prevRankB);
                             }
 
-                            // Official iRacing scoring position is authoritative in Race sessions
+                            // Official iRacing scoring / starting-grid position is authoritative in Race sessions
                             if (a.Position > 0 && b.Position > 0 && a.Position != b.Position)
                                 return a.Position.CompareTo(b.Position);
                             if (a.Position > 0 && b.Position <= 0) return -1;
@@ -2966,6 +3103,12 @@ namespace FreeOverlay
                                 return progB.CompareTo(progA);
                             if (progA > 0f && progB <= 0f) return -1;
                             if (progB > 0f && progA <= 0f) return 1;
+
+                            // Pre-race grid fallback: sort by Qualifying BestLap if Position wasn't yet assigned
+                            if (a.BestLapSec > 0f && b.BestLapSec > 0f && Math.Abs(a.BestLapSec - b.BestLapSec) > 0.0001f)
+                                return a.BestLapSec.CompareTo(b.BestLapSec);
+                            if (a.BestLapSec > 0f && b.BestLapSec <= 0f) return -1;
+                            if (b.BestLapSec > 0f && a.BestLapSec <= 0f) return 1;
                         }
                         else
                         {
@@ -3262,6 +3405,7 @@ namespace FreeOverlay
                 snap.IsLiveSource = true;
                 snap.TrackName = trackName;
                 snap.SessionType = sessionType;
+                snap.CarClassShortName = !string.IsNullOrEmpty(_cachedPlayerClassShortName) ? _cachedPlayerClassShortName : "GT3";
                 snap.StrengthOfField = _cachedSof;
                 snap.CurrentLap = _cachedMaxLap;
                 snap.TotalLaps = (sessionLapsRemain > 0 && sessionLapsRemain < 32767) ? sessionLapsRemain : 0;
@@ -4594,10 +4738,23 @@ namespace FreeOverlay
             else if (code == "CA")
             {
                 using (SolidBrush red = new SolidBrush(Color.FromArgb(216, 6, 33))) g.FillRectangle(red, r);
-                g.FillRectangle(Brushes.White, x + w / 4, y, w / 2, h);
-                int rad = Math.Max(2, h / 4);
+                g.FillRectangle(Brushes.White, x + w / 4, y, w - (w / 4) * 2, h);
+                int cx = x + w / 2;
+                int cy = y + h / 2;
+                int rx = Math.Max(2, w / 6);
+                int ry = Math.Max(2, h / 3);
+                Point[] leaf = new Point[]
+                {
+                    new Point(cx, cy - ry),
+                    new Point(cx + rx, cy),
+                    new Point(cx, cy + ry - 1),
+                    new Point(cx - rx, cy)
+                };
                 using (SolidBrush red = new SolidBrush(Color.FromArgb(216, 6, 33)))
-                    g.FillEllipse(red, x + w / 2 - rad, y + h / 2 - rad, rad * 2, rad * 2);
+                {
+                    g.FillPolygon(red, leaf);
+                    g.FillRectangle(red, cx - 1, cy, 2, ry);
+                }
             }
             else if (code == "PL")
             {
@@ -4692,13 +4849,52 @@ namespace FreeOverlay
             }
             else if (code == "ZA")
             {
-                DrawHorizBicolor(g, x, y, w, h, Color.FromArgb(222, 56, 49), Color.FromArgb(0, 35, 149));
+                // South Africa flag: white fimbriation base, red top band, blue bottom band,
+                // green horizontal & Y-arms, gold hoist chevron, and black hoist triangle
+                g.FillRectangle(Brushes.White, r);
+                int bandH = Math.Max(2, h / 3);
+                using (SolidBrush red = new SolidBrush(Color.FromArgb(224, 60, 49)))
+                    g.FillRectangle(red, x, y, w, bandH);
+                using (SolidBrush blue = new SolidBrush(Color.FromArgb(0, 20, 137)))
+                    g.FillRectangle(blue, x, y + h - bandH, w, bandH);
+
+                Point[] whiteChevron = new Point[]
+                {
+                    new Point(x, y),
+                    new Point(x + (int)(w * 0.58f), y + h / 2),
+                    new Point(x, y + h)
+                };
+                g.FillPolygon(Brushes.White, whiteChevron);
+
+                int greenH = Math.Max(3, h - bandH * 2);
                 using (SolidBrush green = new SolidBrush(Color.FromArgb(0, 119, 73)))
                 {
-                    g.FillRectangle(green, x, y + h / 3, w, h / 3);
-                    Point[] tri = new Point[] { new Point(x, y), new Point(x + w / 2, y + h / 2), new Point(x, y + h) };
-                    g.FillPolygon(green, tri);
+                    g.FillRectangle(green, x, y + (h - greenH) / 2, w, greenH);
+                    Point[] greenTri = new Point[]
+                    {
+                        new Point(x, y + 1),
+                        new Point(x + (int)(w * 0.50f), y + h / 2),
+                        new Point(x, y + h - 1)
+                    };
+                    g.FillPolygon(green, greenTri);
                 }
+
+                Point[] goldTri = new Point[]
+                {
+                    new Point(x, y + 2),
+                    new Point(x + (int)(w * 0.36f), y + h / 2),
+                    new Point(x, y + h - 2)
+                };
+                using (SolidBrush gold = new SolidBrush(Color.FromArgb(255, 184, 28)))
+                    g.FillPolygon(gold, goldTri);
+
+                Point[] blackTri = new Point[]
+                {
+                    new Point(x, y + 3),
+                    new Point(x + (int)(w * 0.25f), y + h / 2),
+                    new Point(x, y + h - 3)
+                };
+                g.FillPolygon(Brushes.Black, blackTri);
             }
             else if (code == "AE")
             {
@@ -4894,11 +5090,13 @@ namespace FreeOverlay
                     g.FillRectangle(sbBg, 0, sessY, Width, sessionH);
                 }
 
-                int gt3W = (int)Math.Round(34 * s);
+                string clsTxt = !string.IsNullOrEmpty(_snapshot.CarClassShortName) ? _snapshot.CarClassShortName : "GT3";
+                SizeF clsSz = g.MeasureString(clsTxt, fSmallBold);
+                int gt3W = Math.Max((int)Math.Round(34 * s), (int)Math.Ceiling(clsSz.Width) + (int)Math.Round(10 * s));
                 int gt3H = Math.Max(16, (int)Math.Round(18 * s));
                 Rectangle gt3Rect = new Rectangle((int)(10 * s), sessY + (sessionH - gt3H) / 2, gt3W, gt3H);
                 using (SolidBrush gt3B = new SolidBrush(Color.FromArgb(255, 82, 82))) g.FillRectangle(gt3B, gt3Rect);
-                g.DrawString("GT3", fSmallBold, Brushes.White, gt3Rect, centerFmt);
+                g.DrawString(clsTxt, fSmallBold, Brushes.White, gt3Rect, centerFmt);
 
                 int sessTypeX = gt3Rect.Right + (int)Math.Round(8 * s);
                 using (SolidBrush cyanB = new SolidBrush(Color.FromArgb(56, 189, 248)))
@@ -4933,31 +5131,31 @@ namespace FreeOverlay
                     g.DrawString(metaStr, fSmallBold, goldB, new RectangleF(Width - metaW - (int)(8 * s), sessY, metaW, sessionH), rightFmt);
                 }
 
-                int colLapW = (int)Math.Round(84 * s);
-                int colLapX = Width - colLapW - (int)Math.Round(10 * s);
+                int colLapW = (int)Math.Round(76 * s);
+                int colLapX = Width - colLapW - (int)Math.Round(8 * s);
 
-                int colGapW = (int)Math.Round(56 * s);
-                int colGapX = colLapX - colGapW - (int)Math.Round(6 * s);
+                int colGapW = (int)Math.Round(50 * s);
+                int colGapX = colLapX - colGapW - (int)Math.Round(5 * s);
 
-                int colIrW = (int)Math.Round(88 * s);
-                int colIrX = colGapX - colIrW - (int)Math.Round(6 * s);
+                int colIrW = (int)Math.Round(84 * s);
+                int colIrX = colGapX - colIrW - (int)Math.Round(5 * s);
 
-                int colSrW = (int)Math.Round(56 * s);
-                int colSrX = colIrX - colSrW - (int)Math.Round(8 * s);
+                int colSrW = (int)Math.Round(52 * s);
+                int colSrX = colIrX - colSrW - (int)Math.Round(6 * s);
 
                 int colPosX = (int)Math.Round(10 * s);
-                int colPosW = (int)Math.Round(25 * s);
+                int colPosW = (int)Math.Round(24 * s);
 
-                int colNumX = colPosX + colPosW + (int)Math.Round(6 * s);
-                int colNumW = _settings.ShowCarNumber ? (int)Math.Round(42 * s) : 0;
+                int colNumX = colPosX + colPosW + (int)Math.Round(5 * s);
+                int colNumW = _settings.ShowCarNumber ? (int)Math.Round(38 * s) : 0;
 
                 int colFlagX = _settings.ShowCarNumber
-                    ? (colNumX + colNumW + (int)Math.Round(4 * s))
-                    : (colPosX + colPosW + (int)Math.Round(6 * s));
-                int colFlagW = (int)Math.Round(24 * s);
+                    ? (colNumX + colNumW + (int)Math.Round(3 * s))
+                    : (colPosX + colPosW + (int)Math.Round(5 * s));
+                int colFlagW = (int)Math.Round(23 * s);
 
-                int colDriverX = colFlagX + colFlagW + (int)Math.Round(8 * s);
-                int colDriverW = Math.Max((int)Math.Round(60 * s), colSrX - colDriverX - (int)Math.Round(6 * s));
+                int colDriverX = colFlagX + colFlagW + (int)Math.Round(6 * s);
+                int colDriverW = Math.Max((int)Math.Round(60 * s), colSrX - colDriverX - (int)Math.Round(5 * s));
 
                 int colHeadY = sessY + sessionH;
                 using (SolidBrush thBg = new SolidBrush(Color.FromArgb(12, 15, 22)))
