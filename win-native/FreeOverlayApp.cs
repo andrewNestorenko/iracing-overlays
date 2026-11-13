@@ -13,6 +13,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
+using Timer = System.Windows.Forms.Timer;
 
 namespace FreeOverlay
 {
@@ -854,10 +855,16 @@ namespace FreeOverlay
                 double desiredNorm = (clamped - 3.5) / 96.5;
                 double desiredAmp = 0.22 + 0.30 * desiredNorm;
 
+                // Snap pitch immediately when starting from silence so initial threshold brake hits at true reference pitch
+                if (_contAmp < 0.001)
+                {
+                    _contNorm = desiredNorm;
+                }
+
                 for (int i = 0; i < dst.Length; i++)
                 {
-                    _contNorm += (desiredNorm - _contNorm) * 0.0045;
-                    _contAmp += (desiredAmp - _contAmp) * 0.0050;
+                    _contNorm += (desiredNorm - _contNorm) * 0.0060;
+                    _contAmp += (desiredAmp - _contAmp) * 0.0055;
 
                     double freq = 245.0 * Math.Pow(1290.0 / 245.0, _contNorm);
                     if (overBrake)
@@ -2410,7 +2417,7 @@ namespace FreeOverlay
             }
 
             // Evaluate approaching braking zone for Audio & Visual Countdown Cues
-            float distToStartMeters;
+            float distToStartMeters = 0f;
             BrakingZoneInfo relZone = HasReferenceLap ? GetRelevantZone(distPct, out distToStartMeters, safeTrackLen) : null;
             if (relZone != null)
             {
@@ -2494,27 +2501,15 @@ namespace FreeOverlay
             }
 
             // Continuous dynamic pitch-modulated brake pressure & trail-braking audio:
-            // Tracks live brake pedal pressure whenever applied (so pedal modulation & Lap 1 learning always respond),
-            // and plays reference braking target curve inside reference braking zones, with over-brake flutter if > +14% over target.
+            // Driven strictly by the comparison/reference lap's brake pressure (refBrkNow), never the player's own pedal,
+            // so pitch reflects the exact target threshold pressure (high pitch) and trail-brake release (low pitch).
             if (playPressureAudio)
             {
-                float tonePct = 0f;
-                bool overBraking = false;
+                float tonePct = (HasReferenceLap && playerSpeedKph >= 15.0f && refBrkNow >= 3.5f)
+                    ? refBrkNow
+                    : 0f;
 
-                if (playerBrake >= 4.0f)
-                {
-                    tonePct = playerBrake;
-                    if (HasReferenceLap && refBrkNow >= 6.0f && playerBrake > refBrkNow + 14.0f)
-                    {
-                        overBraking = true;
-                    }
-                }
-                else if (HasReferenceLap && playerSpeedKph >= 28.0f && refBrkNow >= 4.5f)
-                {
-                    tonePct = refBrkNow;
-                }
-
-                BrakingAudioCoach.UpdateContinuousPressure(tonePct, overBraking, tonePct >= 4.0f);
+                BrakingAudioCoach.UpdateContinuousPressure(tonePct, false, tonePct >= 3.5f);
             }
             else
             {
@@ -2754,7 +2749,8 @@ namespace FreeOverlay
         private static readonly Dictionary<string, string> ClubMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             // International / neutral flairs
-            { "international", "UN" }, { "none", "UN" }, { "-none-", "UN" }, { "iracing", "UN" },
+            { "international", "UN" }, { "global", "UN" }, { "unaffiliated", "UN" },
+            { "none", "UN" }, { "-none-", "UN" }, { "iracing", "UN" },
             { "un", "UN" }, { "world", "UN" }, { "europe", "UN" }, { "asia", "UN" }, { "africa", "ZA" },
 
             // United States & US Clubs / States
@@ -2792,7 +2788,9 @@ namespace FreeOverlay
             { "uruguay", "UY" }, { "uy", "UY" },
             { "peru", "PE" }, { "perú", "PE" }, { "venezuela", "VE" }, { "ecuador", "EC" },
             { "costa rica", "CR" }, { "panama", "PA" }, { "guatemala", "GT" }, { "paraguay", "PY" },
-            { "bolivia", "BO" }, { "dominican republic", "DO" },
+            { "bolivia", "BO" }, { "dominican republic", "DO" }, { "el salvador", "SV" }, { "honduras", "HN" },
+            { "nicaragua", "NI" }, { "jamaica", "JM" }, { "barbados", "BB" }, { "trinidad and tobago", "TT" },
+            { "bahamas", "BS" }, { "cuba", "CU" },
 
             // UK & Ireland
             { "uk and i", "GB" }, { "uk & ireland", "GB" }, { "united kingdom", "GB" }, { "great britain", "GB" },
@@ -2814,9 +2812,11 @@ namespace FreeOverlay
             { "catalonia", "ES" }, { "catalunya", "ES" }, { "basque country", "ES" }, { "andalusia", "ES" },
             { "madrid", "ES" }, { "canary islands", "ES" }, { "andorra", "ES" },
             { "portugal", "PT" }, { "pt", "PT" },
-            { "italy", "IT" }, { "italia", "IT" }, { "it", "IT" }, { "san marino", "IT" }, { "malta", "IT" },
-            { "greece", "GR" }, { "gr", "GR" }, { "cyprus", "GR" },
+            { "italy", "IT" }, { "italia", "IT" }, { "it", "IT" }, { "san marino", "IT" }, { "malta", "MT" },
+            { "vatican city", "VA" },
+            { "greece", "GR" }, { "gr", "GR" }, { "cyprus", "CY" },
             { "turkey", "TR" }, { "türkiye", "TR" }, { "turkiye", "TR" }, { "tr", "TR" },
+            { "armenia", "AM" }, { "georgia (country)", "GE" }, { "azerbaijan", "AZ" },
 
             // Nordics & Baltics
             { "finland", "FI" }, { "suomi", "FI" }, { "fi", "FI" },
@@ -2846,25 +2846,47 @@ namespace FreeOverlay
             { "new south wales", "AU" }, { "victoria", "AU" }, { "queensland", "AU" },
             { "western australia", "AU" }, { "south australia", "AU" }, { "tasmania", "AU" },
             { "new zealand", "NZ" }, { "nz", "NZ" },
+            { "fiji", "FJ" }, { "papua new guinea", "PG" },
 
             // Asia, Middle East & Africa
             { "japan", "JP" }, { "jp", "JP" },
             { "korea", "KR" }, { "south korea", "KR" }, { "republic of korea", "KR" }, { "kr", "KR" },
             { "china", "CN" }, { "cn", "CN" }, { "asia-pacific", "JP" },
             { "taiwan", "TW" }, { "chinese taipei", "TW" }, { "tw", "TW" },
-            { "hong kong", "HK" }, { "hk", "HK" }, { "macau", "HK" },
-            { "india", "IN" }, { "in", "IN" },
+            { "hong kong", "HK" }, { "hk", "HK" }, { "macau", "MO" },
+            { "india", "IN" }, { "in", "IN" }, { "pakistan", "PK" }, { "bangladesh", "BD" }, { "sri lanka", "LK" },
             { "singapore", "SG" }, { "sg", "SG" },
             { "malaysia", "MY" }, { "my", "MY" },
             { "thailand", "TH" }, { "th", "TH" },
             { "indonesia", "ID" }, { "id", "ID" },
             { "philippines", "PH" }, { "ph", "PH" },
-            { "vietnam", "VN" }, { "vn", "VN" },
+            { "vietnam", "VN" }, { "vn", "VN" }, { "kazakhstan", "KZ" },
             { "united arab emirates", "AE" }, { "uae", "AE" }, { "dubai", "AE" }, { "ae", "AE" },
-            { "saudi arabia", "SA" }, { "sa", "SA" }, { "qatar", "AE" }, { "bahrain", "AE" }, { "kuwait", "AE" },
+            { "saudi arabia", "SA" }, { "sa", "SA" }, { "qatar", "QA" }, { "bahrain", "BH" }, { "kuwait", "KW" },
+            { "oman", "OM" }, { "lebanon", "LB" }, { "jordan", "JO" },
             { "israel", "IL" }, { "il", "IL" },
-            { "south africa", "ZA" }, { "africa/continental", "ZA" }, { "za", "ZA" }
+            { "south africa", "ZA" }, { "africa/continental", "ZA" }, { "za", "ZA" },
+            { "egypt", "EG" }, { "morocco", "MA" }, { "nigeria", "NG" }, { "kenya", "KE" }
         };
+
+        public static string GetLocalMachineCountryCode()
+        {
+            try
+            {
+                string iso = RegionInfo.CurrentRegion.TwoLetterISORegionName;
+                if (!string.IsNullOrEmpty(iso) && iso.Length == 2 &&
+                    char.IsLetter(iso[0]) && char.IsLetter(iso[1]) &&
+                    !string.Equals(iso, "IV", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(iso, "UN", StringComparison.OrdinalIgnoreCase))
+                {
+                    return iso.ToUpperInvariant();
+                }
+            }
+            catch
+            {
+            }
+            return "US";
+        }
 
         public static string Resolve(string flairOrClub, string fallbackClubOrCode)
         {
@@ -3437,6 +3459,7 @@ namespace FreeOverlay
         private float _prevDeltaOpt = 0f;
         private float _prevDeltaPers = 0f;
         private float _prevDeltaLast = 0f;
+        private string _lastKnownPlayerCountry = null;
 
         private void CloseMapping()
         {
@@ -3718,6 +3741,10 @@ namespace FreeOverlay
 
             int paceCarIdx = -1;
             int.TryParse(ExtractYamlField(driverInfoSection, "PaceCarIdx", "-1"), out paceCarIdx);
+            int driverCarIdx = -1;
+            int.TryParse(ExtractYamlField(driverInfoSection, "DriverCarIdx", "-1"), out driverCarIdx);
+            int driverUserId = -1;
+            int.TryParse(ExtractYamlField(driverInfoSection, "DriverUserID", "-1"), out driverUserId);
 
             Match driversHeaderMatch = Regex.Match(driverInfoSection, @"(?:^|\r?\n)([ \t]+)Drivers:[ \t]*\r?\n");
             if (!driversHeaderMatch.Success) return;
@@ -3778,6 +3805,10 @@ namespace FreeOverlay
                     srVal = lm.Groups[2].Value;
                 }
 
+                int userId = -1;
+                int.TryParse(ExtractYamlField(chunk, "UserID", "-1"), out userId);
+                bool isLocalDriver = (cIdx == driverCarIdx) || (driverUserId > 0 && userId == driverUserId);
+
                 string flairName = ExtractYamlField(chunk, "FlairName", string.Empty);
                 string clubName = ExtractYamlField(chunk, "ClubName", string.Empty);
                 string countryCodeField = ExtractYamlField(chunk, "CountryCode", string.Empty);
@@ -3785,6 +3816,23 @@ namespace FreeOverlay
                 string resolvedCode = CountryResolver.Resolve(
                     !string.IsNullOrEmpty(flairName) ? flairName : clubName,
                     !string.IsNullOrEmpty(clubName) ? clubName : countryCodeField);
+
+                if (isLocalDriver)
+                {
+                    if (!string.IsNullOrEmpty(resolvedCode) && resolvedCode != "UN")
+                    {
+                        _lastKnownPlayerCountry = resolvedCode;
+                    }
+                    else if (string.IsNullOrEmpty(flairName) && string.IsNullOrEmpty(clubName) && string.IsNullOrEmpty(countryCodeField))
+                    {
+                        // In Offline Testing / AI solo sessions, iRacing omits FlairName & ClubName from YAML;
+                        // use cached online flair or the local OS ISO country code (e.g. "US").
+                        resolvedCode = !string.IsNullOrEmpty(_lastKnownPlayerCountry)
+                            ? _lastKnownPlayerCountry
+                            : CountryResolver.GetLocalMachineCountryCode();
+                        displayClub = resolvedCode;
+                    }
+                }
 
                 CachedYamlDriver cd = new CachedYamlDriver();
                 cd.CarIdx = cIdx;
@@ -5994,9 +6042,110 @@ namespace FreeOverlay
                     g.FillEllipse(blue, x + w / 2 - 2, y + h / 2 - 2, 4, 4);
                 }
             }
+            else if (code == "AM")
+            {
+                DrawHorizTricolor(g, x, y, w, h, Color.FromArgb(217, 0, 18), Color.FromArgb(0, 51, 160), Color.FromArgb(242, 168, 0));
+            }
+            else if (code == "BO")
+            {
+                DrawHorizTricolor(g, x, y, w, h, Color.FromArgb(213, 43, 30), Color.FromArgb(249, 227, 0), Color.FromArgb(0, 121, 52));
+            }
+            else if (code == "PY")
+            {
+                DrawHorizTricolor(g, x, y, w, h, Color.FromArgb(213, 43, 30), Color.White, Color.FromArgb(0, 56, 168));
+            }
+            else if (code == "SV" || code == "HN" || code == "NI")
+            {
+                DrawHorizTricolor(g, x, y, w, h, Color.FromArgb(0, 71, 171), Color.White, Color.FromArgb(0, 71, 171));
+            }
+            else if (code == "GT")
+            {
+                DrawVertTricolor(g, x, y, w, h, Color.FromArgb(73, 151, 208), Color.White, Color.FromArgb(73, 151, 208));
+            }
+            else if (code == "BB")
+            {
+                DrawVertTricolor(g, x, y, w, h, Color.FromArgb(0, 38, 127), Color.FromArgb(255, 199, 38), Color.FromArgb(0, 38, 127));
+            }
+            else if (code == "NG")
+            {
+                DrawVertTricolor(g, x, y, w, h, Color.FromArgb(0, 135, 81), Color.White, Color.FromArgb(0, 135, 81));
+            }
+            else if (code == "JM")
+            {
+                using (SolidBrush green = new SolidBrush(Color.FromArgb(0, 155, 58))) g.FillRectangle(green, r);
+                Point[] leftT = new Point[] { new Point(x, y + 1), new Point(x + w / 2 - 1, y + h / 2), new Point(x, y + h - 1) };
+                Point[] rightT = new Point[] { new Point(x + w, y + 1), new Point(x + w / 2 + 1, y + h / 2), new Point(x + w, y + h - 1) };
+                g.FillPolygon(Brushes.Black, leftT);
+                g.FillPolygon(Brushes.Black, rightT);
+                using (Pen gold = new Pen(Color.FromArgb(254, 209, 0), Math.Max(1.6f, h / 5.5f)))
+                {
+                    g.DrawLine(gold, x, y, x + w, y + h);
+                    g.DrawLine(gold, x + w, y, x, y + h);
+                }
+            }
+            else if (code == "DO")
+            {
+                using (SolidBrush blue = new SolidBrush(Color.FromArgb(0, 45, 98)))
+                {
+                    g.FillRectangle(blue, x, y, w / 2, h / 2);
+                    g.FillRectangle(blue, x + w / 2, y + h / 2, w - w / 2, h - h / 2);
+                }
+                using (SolidBrush red = new SolidBrush(Color.FromArgb(206, 17, 38)))
+                {
+                    g.FillRectangle(red, x + w / 2, y, w - w / 2, h / 2);
+                    g.FillRectangle(red, x, y + h / 2, w / 2, h - h / 2);
+                }
+                int cw = Math.Max(2, h / 4);
+                g.FillRectangle(Brushes.White, x, y + (h - cw) / 2, w, cw);
+                g.FillRectangle(Brushes.White, x + (w - cw) / 2, y, cw, h);
+            }
+            else if (code == "PA")
+            {
+                g.FillRectangle(Brushes.White, r);
+                using (SolidBrush red = new SolidBrush(Color.FromArgb(218, 18, 26)))
+                    g.FillRectangle(red, x + w / 2, y, w - w / 2, h / 2);
+                using (SolidBrush blue = new SolidBrush(Color.FromArgb(7, 35, 87)))
+                    g.FillRectangle(blue, x, y + h / 2, w / 2, h - h / 2);
+            }
+            else if (code == "VA")
+            {
+                using (SolidBrush yellow = new SolidBrush(Color.FromArgb(255, 224, 0)))
+                    g.FillRectangle(yellow, x, y, w / 2, h);
+                g.FillRectangle(Brushes.White, x + w / 2, y, w - w / 2, h);
+            }
+            else if (code == "MO")
+            {
+                using (SolidBrush green = new SolidBrush(Color.FromArgb(0, 120, 94))) g.FillRectangle(green, r);
+                g.FillEllipse(Brushes.White, x + w / 2 - 2, y + h / 2 - 2, 4, 4);
+            }
+            else if (code == "QA" || code == "BH")
+            {
+                using (SolidBrush maroon = new SolidBrush(code == "QA" ? Color.FromArgb(138, 21, 56) : Color.FromArgb(206, 17, 38)))
+                    g.FillRectangle(maroon, r);
+                g.FillRectangle(Brushes.White, x, y, w / 3, h);
+            }
+            else if (code == "OM")
+            {
+                DrawHorizTricolor(g, x, y, w, h, Color.White, Color.FromArgb(219, 22, 27), Color.FromArgb(0, 128, 0));
+                using (SolidBrush red = new SolidBrush(Color.FromArgb(219, 22, 27)))
+                    g.FillRectangle(red, x, y, w / 4 + 1, h);
+            }
+            else if (code != "UN" && code.Length == 2)
+            {
+                // Distinct 2-letter ISO country code badge for any rare country code (not UN/Global)
+                using (SolidBrush isoBg = new SolidBrush(Color.FromArgb(30, 41, 59)))
+                    g.FillRectangle(isoBg, r);
+                using (Font isoFont = new Font("Consolas", Math.Max(5.5f, (h - 2) * 0.62f), FontStyle.Bold, GraphicsUnit.Pixel))
+                using (StringFormat sf = new StringFormat())
+                {
+                    sf.Alignment = StringAlignment.Center;
+                    sf.LineAlignment = StringAlignment.Center;
+                    g.DrawString(code, isoFont, Brushes.White, new RectangleF(x - 1, y, w + 2, h + 1), sf);
+                }
+            }
             else
             {
-                // International / UN / other 2-letter code badge
+                // International / Global / Unaffiliated / UN globe badge
                 using (SolidBrush unBg = new SolidBrush(Color.FromArgb(30, 88, 158)))
                 {
                     g.FillRectangle(unBg, r);
