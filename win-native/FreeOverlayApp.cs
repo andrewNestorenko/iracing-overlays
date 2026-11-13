@@ -1844,6 +1844,9 @@ namespace FreeOverlay
                 float[] sumThrot = new float[BUCKETS];
                 float[] sumSpd = new float[BUCKETS];
                 float[] sumSteer = new float[BUCKETS];
+                int[] bucketGear = new int[BUCKETS];
+                bool[] hasGear = new bool[BUCKETS];
+                bool anyGearParsed = false;
                 int[] counts = new int[BUCKETS];
                 float maxBrakeSeen = 0f;
                 float maxThrotSeen = 0f;
@@ -1869,9 +1872,24 @@ namespace FreeOverlay
                     if (colSpeed >= 0 && colSpeed < cols.Length)
                         float.TryParse(cols[colSpeed].Trim().Trim('"'), NumberStyles.Float, CultureInfo.InvariantCulture, out spd);
 
-                    int gVal = 3;
+                    int gVal = 0;
+                    bool parsedGear = false;
                     if (colGear >= 0 && colGear < cols.Length)
-                        int.TryParse(cols[colGear].Trim().Trim('"'), out gVal);
+                    {
+                        string gs = cols[colGear].Trim().Trim('"');
+                        if (string.Equals(gs, "R", StringComparison.OrdinalIgnoreCase)) { gVal = -1; parsedGear = true; }
+                        else if (string.Equals(gs, "N", StringComparison.OrdinalIgnoreCase)) { gVal = 0; parsedGear = true; }
+                        else if (int.TryParse(gs, NumberStyles.Integer, CultureInfo.InvariantCulture, out gVal)) { parsedGear = true; }
+                        else
+                        {
+                            float gf;
+                            if (float.TryParse(gs, NumberStyles.Float, CultureInfo.InvariantCulture, out gf))
+                            {
+                                gVal = (int)Math.Round(gf);
+                                parsedGear = true;
+                            }
+                        }
+                    }
 
                     float stVal = 0f;
                     if (colSteer >= 0 && colSteer < cols.Length)
@@ -1888,7 +1906,12 @@ namespace FreeOverlay
                     sumThrot[b] += thr;
                     sumSpd[b] += spd;
                     sumSteer[b] += stVal;
-                    RefGear[b] = gVal;
+                    if (parsedGear)
+                    {
+                        bucketGear[b] = gVal;
+                        hasGear[b] = true;
+                        anyGearParsed = true;
+                    }
                     counts[b]++;
                 }
 
@@ -1896,6 +1919,19 @@ namespace FreeOverlay
                 float thrScale = (maxThrotSeen <= 1.05f) ? 100.0f : 1.0f;
                 // iRacing exports SteeringWheelAngle in radians (+left, -right); convert to degrees (-left, +right) if in radians
                 float steerScale = (maxSteerAbsSeen > 0.01f && maxSteerAbsSeen <= 8.0f) ? -57.29578f : 1.0f;
+
+                int lastG = 4;
+                if (anyGearParsed)
+                {
+                    for (int i = 0; i < BUCKETS; i++)
+                    {
+                        if (hasGear[i] && bucketGear[i] != 0)
+                        {
+                            lastG = bucketGear[i];
+                            break;
+                        }
+                    }
+                }
 
                 float lastB = 0f, lastT = 100f, lastS = 180f, lastSt = 0f;
                 for (int i = 0; i < BUCKETS; i++)
@@ -1907,11 +1943,15 @@ namespace FreeOverlay
                         lastS = sumSpd[i] / counts[i];
                         if (lastS < 90f) lastS *= 3.6f; // m/s to kph if needed
                         lastSt = Math.Max(-180f, Math.Min(180f, (sumSteer[i] / counts[i]) * steerScale));
+                        if (hasGear[i]) lastG = bucketGear[i];
                     }
                     RefBrake[i] = lastB;
                     RefThrottle[i] = lastT;
                     RefSpeedKph[i] = lastS;
                     RefSteeringDeg[i] = lastSt;
+                    RefGear[i] = anyGearParsed
+                        ? lastG
+                        : (lastS < 62f ? 1 : (lastS < 102f ? 2 : (lastS < 142f ? 3 : (lastS < 182f ? 4 : (lastS < 222f ? 5 : 6)))));
                 }
 
                 RebuildZonesFromRefTrace(colSteer < 0 || maxSteerAbsSeen < 0.005f);
@@ -6664,13 +6704,19 @@ namespace FreeOverlay
         private Rectangle _rectAudioTestBtn;
         private Rectangle _rectSteerToggleBtn;
 
-        private const int GRAPH_SAMPLES = 72;
+        private const int GRAPH_SAMPLES = 96;
+        private static readonly float[] PrepCueSecs = new float[] { 1.05f, 0.70f, 0.35f };
         private readonly PointF[] _g61BrakeBuf = new PointF[GRAPH_SAMPLES + 1];
         private readonly PointF[] _g61ThrotBuf = new PointF[GRAPH_SAMPLES + 1];
         private readonly PointF[] _g61SteerBuf = new PointF[GRAPH_SAMPLES + 1];
         private PointF[] _youBrakeBuf = new PointF[0];
         private PointF[] _youThrotBuf = new PointF[0];
         private PointF[] _youSteerBuf = new PointF[0];
+
+        // Sub-tick smooth visual position interpolator (~90-100 FPS between 60 Hz iRacing ticks)
+        private float _lastRawLivePct = -1f;
+        private long _lastLivePctTimestamp = 0;
+        private float _smoothVisualPct = 0f;
 
         private float _cachedFontScale = -1f;
         private Font _fHeader;
@@ -6706,6 +6752,13 @@ namespace FreeOverlay
             _snapshot = initialSnapshot;
 
             Text = "Free Overlay - Garage61 Coach";
+            SetStyle(
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.UserPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.Opaque,
+                true
+            );
             AutoScaleMode = AutoScaleMode.None;
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.Manual;
@@ -6823,12 +6876,59 @@ namespace FreeOverlay
         public void UpdateSnapshot(SessionSnapshot snap)
         {
             _snapshot = snap;
+            if (snap != null)
+            {
+                float rawPct = snap.PlayerLapDistPct;
+                long nowTs = Stopwatch.GetTimestamp();
+                if (!snap.IsLiveSource || !snap.Connected || !snap.PlayerInWorld || snap.PlayerOnPitRoad || snap.PlayerSpeedKph < 5.0f)
+                {
+                    _lastRawLivePct = rawPct;
+                    _lastLivePctTimestamp = nowTs;
+                    _smoothVisualPct = rawPct;
+                }
+                else if (Math.Abs(rawPct - _lastRawLivePct) > 0.000001f)
+                {
+                    float prevSmooth = _smoothVisualPct;
+                    _lastRawLivePct = rawPct;
+                    _lastLivePctTimestamp = nowTs;
+
+                    // Prevent any tiny sub-millimeter backward step when a new 60 Hz tick arrives right after extrapolation
+                    float diff = rawPct - prevSmooth;
+                    if (diff < -0.5f) diff += 1.0f;
+                    else if (diff > 0.5f) diff -= 1.0f;
+
+                    if (diff < 0f && diff > -0.0015f)
+                        _smoothVisualPct = prevSmooth;
+                    else
+                        _smoothVisualPct = rawPct;
+                }
+                else
+                {
+                    double elapsedSec = (double)(nowTs - _lastLivePctTimestamp) / Stopwatch.Frequency;
+                    if (elapsedSec > 0.0 && elapsedSec <= 0.018)
+                    {
+                        float speedMps = snap.PlayerSpeedKph / 3.6f;
+                        float extraPct = (float)((speedMps * elapsedSec) / Math.Max(500.0f, snap.TrackLengthMeters));
+                        float candidate = (_lastRawLivePct + extraPct) % 1.0f;
+                        float diff = candidate - _smoothVisualPct;
+                        if (diff < -0.5f) diff += 1.0f;
+                        else if (diff > 0.5f) diff -= 1.0f;
+                        if (diff > 0f || Math.Abs(diff) > 0.01f)
+                            _smoothVisualPct = candidate;
+                    }
+                }
+            }
+
             if (!_settings.Locked && _activeDragCorner == DragCorner.None)
             {
                 bool inside = Bounds.Contains(Cursor.Position);
                 if (inside != _isHovered) _isHovered = inside;
             }
             Invalidate();
+            if (Visible && IsHandleCreated)
+            {
+                Update();
+            }
         }
 
         protected override void WndProc(ref Message m)
@@ -7321,18 +7421,16 @@ namespace FreeOverlay
             // Center 0° steering reference line when steering comparison trace is enabled
             if (_settings.Garage61ShowSteering)
             {
-                using (Pen zeroSteerPen = new Pen(Color.FromArgb(35, 216, 180, 254), 1f))
+                using (Pen zeroSteerPen = new Pen(Color.FromArgb(32, 216, 180, 254), 1f))
                 {
-                    zeroSteerPen.DashStyle = DashStyle.Dot;
                     g.DrawLine(zeroSteerPen, graphRect.Left + 2, steerMidY, graphRect.Right - 2, steerMidY);
                 }
             }
 
-            // Peak Brake Target horizontal dashed line
+            // Peak Brake Target horizontal line
             int peakY = graphRect.Bottom - botPad - (int)Math.Round((peakTarget / 100.0f) * plotH);
-            using (Pen peakPen = new Pen(Color.FromArgb(95, 251, 113, 133), 1f))
+            using (Pen peakPen = new Pen(Color.FromArgb(75, 251, 113, 133), 1f))
             {
-                peakPen.DashStyle = DashStyle.Dash;
                 g.DrawLine(peakPen, graphRect.Left + 2, peakY, graphRect.Right - 2, peakY);
             }
 
@@ -7394,6 +7492,10 @@ namespace FreeOverlay
             _youThrotBuf[totalYouPts - 1] = new PointF(nowX, nowYt);
             _youSteerBuf[totalYouPts - 1] = new PointF(nowX, nowYs);
 
+            // Enable fast AntiAlias exclusively for curve polylines (avoids costly HighQuality + DashStyle software rasterization)
+            SmoothingMode prevSmooth = g.SmoothingMode;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+
             // Draw Throttle traces (G61 reference translucent green, Player solid green)
             using (Pen g61ThrPen = new Pen(Color.FromArgb(105, 52, 211, 153), Math.Max(1.1f, 1.3f * s)))
             {
@@ -7404,12 +7506,11 @@ namespace FreeOverlay
                 if (totalYouPts > 1) g.DrawLines(youThrPen, _youThrotBuf);
             }
 
-            // Draw Steering & Line Comparison traces when enabled (G61 gold dashed vs Player purple solid)
+            // Draw Steering & Line Comparison traces when enabled (G61 translucent gold vs Player bright purple)
             if (_settings.Garage61ShowSteering)
             {
-                using (Pen g61SteerPen = new Pen(Color.FromArgb(185, 250, 204, 21), Math.Max(1.3f, 1.6f * s)))
+                using (Pen g61SteerPen = new Pen(Color.FromArgb(165, 250, 204, 21), Math.Max(1.3f, 1.5f * s)))
                 {
-                    g61SteerPen.DashStyle = DashStyle.Dash;
                     g.DrawLines(g61SteerPen, _g61SteerBuf);
                 }
                 using (Pen youSteerPen = new Pen(Color.FromArgb(235, 192, 132, 252), Math.Max(1.8f, 2.2f * s)))
@@ -7428,6 +7529,8 @@ namespace FreeOverlay
                 if (totalYouPts > 1) g.DrawLines(youBrkPen, _youBrakeBuf);
             }
 
+            g.SmoothingMode = prevSmooth;
+
             // Highlight any G61 Braking Point marker (and 3-2-1 prep ticks) inside the visible window
             float wrappedNow = nowPct - (float)Math.Floor(nowPct);
             float speedMps = Math.Max(18.0f, _snapshot.PlayerSpeedKph / 3.6f);
@@ -7440,20 +7543,18 @@ namespace FreeOverlay
                 // Draw 3 preparatory audio cue ticks ahead of the exact brake spot (1.05s, 0.70s, 0.35s)
                 if (_settings.Garage61AudioEnabled && dp > 0f)
                 {
-                    float[] prepSecs = new float[] { 1.05f, 0.70f, 0.35f };
-                    for (int p = 0; p < prepSecs.Length; p++)
+                    for (int p = 0; p < PrepCueSecs.Length; p++)
                     {
-                        float prepPctOffset = (prepSecs[p] * speedMps) / Math.Max(1000f, trackLen);
+                        float prepPctOffset = (PrepCueSecs[p] * speedMps) / Math.Max(1000f, trackLen);
                         float tickDp = dp - prepPctOffset;
                         if (tickDp >= -winPastPct && tickDp <= winAheadPct)
                         {
                             int tx = graphRect.Left + (int)Math.Round(((tickDp + winPastPct) / totalWinPct) * graphRect.Width);
                             Color tickCol = p == 0
-                                ? Color.FromArgb(110, 56, 189, 248)
-                                : (p == 1 ? Color.FromArgb(130, 250, 204, 21) : Color.FromArgb(150, 249, 115, 22));
-                            using (Pen tp = new Pen(tickCol, Math.Max(1f, 1.1f * s)))
+                                ? Color.FromArgb(95, 56, 189, 248)
+                                : (p == 1 ? Color.FromArgb(115, 250, 204, 21) : Color.FromArgb(135, 249, 115, 22));
+                            using (Pen tp = new Pen(tickCol, 1f))
                             {
-                                tp.DashStyle = DashStyle.Dot;
                                 g.DrawLine(tp, tx, graphRect.Top + 14 * s, tx, graphRect.Bottom - 2);
                             }
                         }
@@ -7464,10 +7565,9 @@ namespace FreeOverlay
                 {
                     int bx = graphRect.Left + (int)Math.Round(((dp + winPastPct) / totalWinPct) * graphRect.Width);
                     bool atBrakeSpot = Math.Abs(dp * trackLen) <= 14.0f;
-                    Color lineCol = atBrakeSpot ? Color.FromArgb(255, 244, 63, 94) : Color.FromArgb(220, 56, 189, 248);
-                    using (Pen mPen = new Pen(lineCol, Math.Max(1.4f, (atBrakeSpot ? 2.2f : 1.5f) * s)))
+                    Color lineCol = atBrakeSpot ? Color.FromArgb(255, 244, 63, 94) : Color.FromArgb(190, 56, 189, 248);
+                    using (Pen mPen = new Pen(lineCol, Math.Max(1.2f, (atBrakeSpot ? 2.2f : 1.4f) * s)))
                     {
-                        if (!atBrakeSpot) mPen.DashStyle = DashStyle.Dot;
                         g.DrawLine(mPen, bx, graphRect.Top + 2, bx, graphRect.Bottom - 2);
                     }
                     int tagW = (int)Math.Round((atBrakeSpot ? 62 : 56) * s);
@@ -7475,8 +7575,7 @@ namespace FreeOverlay
                     Rectangle tagR = new Rectangle(Math.Max(graphRect.Left + 2, Math.Min(graphRect.Right - tagW - 2, bx - tagW / 2)), graphRect.Top + 2, tagW, tagH);
                     Color tagBg = atBrakeSpot ? Color.FromArgb(240, 225, 29, 72) : Color.FromArgb(220, 2, 132, 199);
                     using (SolidBrush tb = new SolidBrush(tagBg)) g.FillRectangle(tb, tagR);
-                    StringFormat cf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                    g.DrawString(atBrakeSpot ? "BRAKE!" : "G61 BRK", fSmall, Brushes.White, tagR, cf);
+                    g.DrawString(atBrakeSpot ? "BRAKE!" : "G61 BRK", fSmall, Brushes.White, tagR, _centerFmt);
                 }
             }
 
@@ -7489,8 +7588,7 @@ namespace FreeOverlay
             int nh = (int)Math.Round(13 * s);
             Rectangle nowTag = new Rectangle(nowX - nw / 2, graphRect.Bottom - nh - 2, nw, nh);
             using (SolidBrush wb = new SolidBrush(Color.White)) g.FillRectangle(wb, nowTag);
-            StringFormat cFmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-            using (SolidBrush db = new SolidBrush(Color.FromArgb(9, 13, 22))) g.DrawString("NOW", fSmall, db, nowTag, cFmt);
+            using (SolidBrush db = new SolidBrush(Color.FromArgb(9, 13, 22))) g.DrawString("NOW", fSmall, db, nowTag, _centerFmt);
 
             string lookLbl = string.Format(CultureInfo.InvariantCulture, "LOOKAHEAD (+{0}m) ->", _settings.Garage61LookaheadMeters);
             using (SolidBrush lBrush = new SolidBrush(Color.FromArgb(125, 211, 252)))
@@ -7499,17 +7597,94 @@ namespace FreeOverlay
             }
         }
 
+        private static string FormatGearToken(int gear)
+        {
+            if (gear < 0) return "R";
+            if (gear == 0) return "N";
+            return gear.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private void DrawGearComparisonBadge(Graphics g, Rectangle rect, int youGear, int refGear, bool hasRef, Font fSmall, Font fMono, Font fBigMono, bool tallBoxLayout, float s)
+        {
+            if (rect.Width < 28 || rect.Height < 12) return;
+
+            Color bgCol;
+            Color borderCol;
+            Color fgCol;
+            string sep = "|";
+
+            if (!hasRef || refGear <= 0 || youGear <= 0)
+            {
+                bgCol = Color.FromArgb(34, 71, 85, 105);
+                borderCol = Color.FromArgb(115, 148, 163, 184);
+                fgCol = Color.FromArgb(226, 232, 240);
+            }
+            else if (youGear == refGear)
+            {
+                bgCol = Color.FromArgb(44, 16, 185, 129);
+                borderCol = Color.FromArgb(175, 52, 211, 153);
+                fgCol = Color.FromArgb(110, 231, 183);
+            }
+            else if (youGear > refGear)
+            {
+                bgCol = Color.FromArgb(52, 245, 158, 11);
+                borderCol = Color.FromArgb(195, 251, 191, 36);
+                fgCol = Color.FromArgb(253, 224, 71);
+                sep = ">";
+            }
+            else
+            {
+                bgCol = Color.FromArgb(48, 14, 165, 233);
+                borderCol = Color.FromArgb(185, 56, 189, 248);
+                fgCol = Color.FromArgb(125, 211, 252);
+                sep = "<";
+            }
+
+            using (SolidBrush bg = new SolidBrush(bgCol)) g.FillRectangle(bg, rect);
+            using (Pen bp = new Pen(borderCol, 1f)) g.DrawRectangle(bp, rect);
+
+            string youTok = FormatGearToken(youGear);
+            string refTok = hasRef ? FormatGearToken(refGear) : "--";
+
+            if (tallBoxLayout && rect.Height >= (int)Math.Round(30 * s))
+            {
+                int topLblH = (int)Math.Round(13 * s);
+                using (SolidBrush lb = new SolidBrush(Color.FromArgb(185, 203, 213, 225)))
+                {
+                    g.DrawString("GEAR (YOU/REF)", fSmall, lb, new RectangleF(rect.Left + 2, rect.Top + 1 * s, rect.Width - 4, topLblH), _centerFmt);
+                }
+                string bigVal = string.Format(CultureInfo.InvariantCulture, "{0} {1} {2}", youTok, sep, refTok);
+                using (SolidBrush vb = new SolidBrush(fgCol))
+                {
+                    g.DrawString(bigVal, fBigMono, vb, new RectangleF(rect.Left + 2, rect.Top + topLblH, rect.Width - 4, Math.Max(12, rect.Height - topLblH - 1)), _centerFmt);
+                }
+            }
+            else
+            {
+                string compactTxt = string.Format(CultureInfo.InvariantCulture, "G{0} {1} REF {2}", youTok, sep, refTok);
+                using (SolidBrush vb = new SolidBrush(fgCol))
+                {
+                    g.DrawString(compactTxt, fSmall, vb, rect, _centerFmt);
+                }
+            }
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             Graphics g = e.Graphics;
-            g.SmoothingMode = SmoothingMode.HighQuality;
-            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.Clear(BackColor);
+            g.CompositingQuality = CompositingQuality.HighSpeed;
+            g.InterpolationMode = InterpolationMode.Low;
+            g.SmoothingMode = SmoothingMode.None;
+            g.PixelOffsetMode = PixelOffsetMode.Default;
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
             float s = EffectiveScale;
             if (_snapshot == null) _snapshot = new SessionSnapshot();
 
-            float nowPct = _snapshot.PlayerLapDistPct;
+            float nowPct = (_snapshot.IsLiveSource && _snapshot.Connected && _smoothVisualPct > 0f)
+                ? _smoothVisualPct
+                : _snapshot.PlayerLapDistPct;
             float trackLen = Math.Max(1000f, _snapshot.TrackLengthMeters);
             float youBrk = _snapshot.PlayerBrakePct;
             float youThr = _snapshot.PlayerThrottlePct;
@@ -7612,23 +7787,30 @@ namespace FreeOverlay
                 // Reserve bottom strip for Pro Steering & Line Coach Bar when enabled
                 int steerBarH = _settings.Garage61ShowSteering ? (int)Math.Round(20 * s) : 0;
                 int mainContentH = _settings.Garage61ShowSteering ? Math.Max(24, bodyH - steerBarH - (int)Math.Round(4 * s)) : bodyH;
+                int youGearNow = _snapshot.PlayerGear;
+                bool hasRefLap = _g61.HasReferenceLap;
+                int refGearNow = hasRefLap ? _g61.GetRefGearAtPct(nowPct) : 0;
 
                 if (_settings.Garage61Style == Garage61LayoutStyle.OptionB_CompactBrakeCoach)
                 {
                     // ===============================================================
-                    // OPTION B: COMPACT BRAKE COACH BAR (Full-Width Brake Matcher)
+                    // OPTION B: COMPACT BRAKE COACH BAR + COMPACT GEAR MODULE
                     // ===============================================================
+                    int gearBoxGap = (int)Math.Round(6 * s);
+                    int gearBoxW = Math.Min((int)Math.Round(86 * s), Math.Max((int)Math.Round(68 * s), (int)(Width * 0.16f)));
+                    int barZoneW = Math.Max(80, Width - pad * 2 - gearBoxW - gearBoxGap);
+
                     int lblH = (int)Math.Round(16 * s);
                     string leftB = string.Format(CultureInfo.InvariantCulture, "LIVE BRAKE: {0:0}%", youBrk);
-                    string rightB = string.Format(CultureInfo.InvariantCulture, "G61 TARGET NOW: {0:0}%  •  CORNER PEAK: {1:0}%", g61Brk, peakTarget);
+                    string rightB = string.Format(CultureInfo.InvariantCulture, "G61 TARGET: {0:0}%  •  PEAK: {1:0}%", g61Brk, peakTarget);
                     using (SolidBrush rb = new SolidBrush(Color.FromArgb(251, 113, 133)))
-                        g.DrawString(leftB, fMono, rb, new RectangleF(pad, bodyY, Width * 0.4f, lblH), leftFmt);
+                        g.DrawString(leftB, fMono, rb, new RectangleF(pad, bodyY, barZoneW * 0.42f, lblH), leftFmt);
                     using (SolidBrush cb = new SolidBrush(Color.FromArgb(125, 211, 252)))
-                        g.DrawString(rightB, fMono, cb, new RectangleF(Width * 0.35f, bodyY, Width * 0.65f - pad, lblH), rightFmt);
+                        g.DrawString(rightB, fMono, cb, new RectangleF(pad + barZoneW * 0.36f, bodyY, barZoneW * 0.64f, lblH), rightFmt);
 
                     int barY = bodyY + lblH + (int)Math.Round(2 * s);
                     int barH = Math.Max((int)Math.Round(14 * s), mainContentH - lblH - (int)Math.Round(2 * s));
-                    Rectangle barR = new Rectangle(pad, barY, Width - pad * 2, barH);
+                    Rectangle barR = new Rectangle(pad, barY, barZoneW, barH);
                     using (SolidBrush bbg = new SolidBrush(Color.FromArgb(20, 25, 37))) g.FillRectangle(bbg, barR);
 
                     int youFillW = (int)Math.Round((youBrk / 100.0f) * barR.Width);
@@ -7654,6 +7836,10 @@ namespace FreeOverlay
 
                     using (Pen bPen = new Pen(Color.FromArgb(65, 255, 255, 255), 1f)) g.DrawRectangle(bPen, barR);
 
+                    // Compact Mine vs Reference Gear Module on the right
+                    Rectangle gearBoxR = new Rectangle(barR.Right + gearBoxGap, bodyY, gearBoxW, Math.Max(lblH + barH, mainContentH));
+                    DrawGearComparisonBadge(g, gearBoxR, youGearNow, refGearNow, hasRefLap, fSmall, fMono, fBigMono, true, s);
+
                     if (_settings.Garage61ShowSteering)
                     {
                         Rectangle stRect = new Rectangle(pad, bodyY + mainContentH + (int)Math.Round(4 * s), Width - pad * 2, steerBarH);
@@ -7673,18 +7859,20 @@ namespace FreeOverlay
                     using (SolidBrush lbg = new SolidBrush(Color.FromArgb(17, 22, 33))) g.FillRectangle(lbg, leftBox);
                     using (Pen lbp = new Pen(Color.FromArgb(45, 255, 255, 255), 1f)) g.DrawRectangle(lbp, leftBox);
 
-                    int inPad = (int)Math.Round(8 * s);
+                    bool compactV = mainContentH < (int)Math.Round(112 * s);
+                    int inPad = (int)Math.Round((compactV ? 6 : 8) * s);
                     int curY = leftBox.Top + inPad;
                     int innerW = leftBox.Width - inPad * 2;
+                    int lblStep = (int)Math.Round((compactV ? 14 : 15) * s);
 
                     // 1. Brake Pressure Bar
                     using (SolidBrush brkLblB = new SolidBrush(Color.FromArgb(251, 113, 133)))
-                        g.DrawString("BRAKE", fSmall, brkLblB, new RectangleF(leftBox.Left + inPad, curY, innerW * 0.5f, 15 * s), leftFmt);
+                        g.DrawString("BRAKE", fSmall, brkLblB, new RectangleF(leftBox.Left + inPad, curY, innerW * 0.5f, lblStep), leftFmt);
                     string bValTxt = string.Format(CultureInfo.InvariantCulture, "{0:0}% / {1:0}%", youBrk, g61Brk);
-                    g.DrawString(bValTxt, fMono, Brushes.White, new RectangleF(leftBox.Left + inPad, curY, innerW, 15 * s), rightFmt);
-                    curY += (int)Math.Round(15 * s);
+                    g.DrawString(bValTxt, fMono, Brushes.White, new RectangleF(leftBox.Left + inPad, curY, innerW, lblStep), rightFmt);
+                    curY += lblStep;
 
-                    int brkBarH = (int)Math.Round(16 * s);
+                    int brkBarH = (int)Math.Round((compactV ? 14 : 16) * s);
                     Rectangle brkBarR = new Rectangle(leftBox.Left + inPad, curY, innerW, brkBarH);
                     using (SolidBrush bbg = new SolidBrush(Color.FromArgb(10, 13, 20))) g.FillRectangle(bbg, brkBarR);
                     int yfW = (int)Math.Round((youBrk / 100.0f) * brkBarR.Width);
@@ -7700,16 +7888,16 @@ namespace FreeOverlay
                     using (Pen pp = new Pen(Color.FromArgb(253, 224, 71), Math.Max(1.2f, 1.6f * s)))
                         g.DrawLine(pp, pkX, brkBarR.Top, pkX, brkBarR.Bottom);
                     using (Pen bp = new Pen(Color.FromArgb(55, 255, 255, 255), 1f)) g.DrawRectangle(bp, brkBarR);
-                    curY += brkBarH + (int)Math.Round(6 * s);
+                    curY += brkBarH + (int)Math.Round((compactV ? 4 : 6) * s);
 
                     // 2. Throttle Bar
                     using (SolidBrush thrLblB = new SolidBrush(Color.FromArgb(52, 211, 153)))
-                        g.DrawString("THROTTLE", fSmall, thrLblB, new RectangleF(leftBox.Left + inPad, curY, innerW * 0.55f, 15 * s), leftFmt);
+                        g.DrawString("THROTTLE", fSmall, thrLblB, new RectangleF(leftBox.Left + inPad, curY, innerW * 0.55f, lblStep), leftFmt);
                     string tValTxt = string.Format(CultureInfo.InvariantCulture, "{0:0}% / {1:0}%", youThr, g61Thr);
-                    g.DrawString(tValTxt, fMono, Brushes.White, new RectangleF(leftBox.Left + inPad, curY, innerW, 15 * s), rightFmt);
-                    curY += (int)Math.Round(15 * s);
+                    g.DrawString(tValTxt, fMono, Brushes.White, new RectangleF(leftBox.Left + inPad, curY, innerW, lblStep), rightFmt);
+                    curY += lblStep;
 
-                    int thrBarH = (int)Math.Round(13 * s);
+                    int thrBarH = (int)Math.Round((compactV ? 11 : 13) * s);
                     Rectangle thrBarR = new Rectangle(leftBox.Left + inPad, curY, innerW, thrBarH);
                     using (SolidBrush tbg = new SolidBrush(Color.FromArgb(10, 13, 20))) g.FillRectangle(tbg, thrBarR);
                     int tfW = (int)Math.Round((youThr / 100.0f) * thrBarR.Width);
@@ -7723,14 +7911,19 @@ namespace FreeOverlay
                         g.FillRectangle(cb, Math.Max(thrBarR.Left, gtCurX - 1), thrBarR.Top, Math.Max(2, (int)Math.Round(3 * s)), thrBarR.Height);
                     using (Pen tp = new Pen(Color.FromArgb(55, 255, 255, 255), 1f)) g.DrawRectangle(tp, thrBarR);
 
-                    // 3. Speed & Gear row at bottom of Left Box
-                    float refSpd = relZone != null ? relZone.MinSpeedKph : _g61.GetRefSpeedAtPct(nowPct);
-                    int refGear = relZone != null ? relZone.MinGear : _g61.GetRefGearAtPct(nowPct);
-                    string spdStr = string.Format(CultureInfo.InvariantCulture, "SPD {0:0}/{1:0} kph", _snapshot.PlayerSpeedKph, refSpd);
-                    string gearStr = string.Format(CultureInfo.InvariantCulture, "G{0} (Ref G{1})", _snapshot.PlayerGear, refGear);
-                    g.DrawString(spdStr, fSmall, Brushes.Gainsboro, new RectangleF(leftBox.Left + inPad, leftBox.Bottom - 18 * s, innerW * 0.65f, 16 * s), leftFmt);
-                    using (SolidBrush gb = new SolidBrush(Color.FromArgb(253, 224, 71)))
-                        g.DrawString(gearStr, fSmall, gb, new RectangleF(leftBox.Left + inPad, leftBox.Bottom - 18 * s, innerW, 16 * s), rightFmt);
+                    // 3. Speed & Live Mine-vs-Ref Gear Badge at bottom of Left Box
+                    float refSpd = hasRefLap ? _g61.GetRefSpeedAtPct(nowPct) : 0f;
+                    int botRowH = Math.Max(14, (int)Math.Round(18 * s));
+                    int botRowY = Math.Max(thrBarR.Bottom + (int)Math.Round(3 * s), leftBox.Bottom - botRowH - (int)Math.Round(4 * s));
+                    int gearPillW = Math.Min((int)Math.Round(90 * s), (int)(innerW * 0.52f));
+                    int spdW = Math.Max(36, innerW - gearPillW - (int)Math.Round(4 * s));
+                    string spdStr = hasRefLap
+                        ? string.Format(CultureInfo.InvariantCulture, "SPD {0:0}/{1:0}", _snapshot.PlayerSpeedKph, refSpd)
+                        : string.Format(CultureInfo.InvariantCulture, "SPD {0:0} kph", _snapshot.PlayerSpeedKph);
+                    g.DrawString(spdStr, fSmall, Brushes.Gainsboro, new RectangleF(leftBox.Left + inPad, botRowY, spdW, botRowH), leftFmt);
+
+                    Rectangle gearPillR = new Rectangle(leftBox.Right - inPad - gearPillW, botRowY, gearPillW, botRowH);
+                    DrawGearComparisonBadge(g, gearPillR, youGearNow, refGearNow, hasRefLap, fSmall, fMono, fBigMono, false, s);
 
                     // Draw Right Spatial Lookahead Graph
                     DrawSpatialLookaheadGraph(g, graphBox, nowPct, trackLen, peakTarget, fSmall, s);
@@ -7748,7 +7941,7 @@ namespace FreeOverlay
                     // ===============================================================
                     int auditH = (int)Math.Round(24 * s);
                     int midH = Math.Max(36, mainContentH - auditH - (int)Math.Round(5 * s));
-                    int leftW = (int)Math.Round(Width * 0.27f);
+                    int leftW = (int)Math.Round(Width * 0.29f);
                     int gapX = (int)Math.Round(8 * s);
 
                     Rectangle leftBox = new Rectangle(pad, bodyY, leftW, midH);
@@ -7757,23 +7950,39 @@ namespace FreeOverlay
                     using (SolidBrush lbg = new SolidBrush(Color.FromArgb(17, 22, 33))) g.FillRectangle(lbg, leftBox);
                     using (Pen lbp = new Pen(Color.FromArgb(45, 255, 255, 255), 1f)) g.DrawRectangle(lbp, leftBox);
 
-                    int inPad = (int)Math.Round(8 * s);
-                    int rowStep = midH / 3;
-                    g.DrawString("BRAKE (YOU / G61)", fSmall, Brushes.Gray, new PointF(leftBox.Left + inPad, leftBox.Top + 2 * s));
+                    int inPad = (int)Math.Round(7 * s);
+                    int innerW = leftBox.Width - inPad * 2;
+                    int rowStep = Math.Max(14, (midH - (int)Math.Round(4 * s)) / 4);
+                    int rTop = leftBox.Top + (int)Math.Round(2 * s);
+
+                    // Row 1: Brake (You / Ref)
+                    g.DrawString("BRAKE", fSmall, Brushes.Gray, new RectangleF(leftBox.Left + inPad, rTop, innerW * 0.42f, rowStep), leftFmt);
                     string brkReadout = string.Format(CultureInfo.InvariantCulture, "{0:0}% / {1:0}%", youBrk, g61Brk);
                     using (SolidBrush rb = new SolidBrush(Color.FromArgb(251, 113, 133)))
-                        g.DrawString(brkReadout, fBigMono, rb, new PointF(leftBox.Left + inPad, leftBox.Top + 13 * s));
+                        g.DrawString(brkReadout, fMono, rb, new RectangleF(leftBox.Left + inPad, rTop, innerW, rowStep), rightFmt);
 
+                    // Row 2: Compact Gear Indicator (Mine vs Ref)
+                    int rGearY = rTop + rowStep;
+                    g.DrawString("GEAR", fSmall, Brushes.Gray, new RectangleF(leftBox.Left + inPad, rGearY, innerW * 0.38f, rowStep), leftFmt);
+                    int cGearW = Math.Min((int)Math.Round(90 * s), (int)(innerW * 0.64f));
+                    int cGearH = Math.Max(13, Math.Min((int)Math.Round(17 * s), rowStep - 2));
+                    Rectangle cGearR = new Rectangle(leftBox.Right - inPad - cGearW, rGearY + (rowStep - cGearH) / 2, cGearW, cGearH);
+                    DrawGearComparisonBadge(g, cGearR, youGearNow, refGearNow, hasRefLap, fSmall, fMono, fBigMono, false, s);
+
+                    // Row 3: Brake Spot Delta
+                    int rSpotY = rTop + rowStep * 2;
                     float spotD = _g61.HasCurrentBrakeSpotDelta ? _g61.CurrentBrakeSpotDeltaMeters : -1.4f;
-                    g.DrawString("BRAKE SPOT DELTA", fSmall, Brushes.Gray, new PointF(leftBox.Left + inPad, leftBox.Top + rowStep + 2 * s));
+                    g.DrawString("SPOT", fSmall, Brushes.Gray, new RectangleF(leftBox.Left + inPad, rSpotY, innerW * 0.38f, rowStep), leftFmt);
                     string spotReadout = string.Format(CultureInfo.InvariantCulture, "{0}{1:0.0}m {2}", spotD >= 0f ? "+" : "-", Math.Abs(spotD), spotD >= 0f ? "LATE" : "EARLY");
                     using (SolidBrush ab = new SolidBrush(Color.FromArgb(253, 224, 71)))
-                        g.DrawString(spotReadout, fMono, ab, new PointF(leftBox.Left + inPad, leftBox.Top + rowStep + 13 * s));
+                        g.DrawString(spotReadout, fMono, ab, new RectangleF(leftBox.Left + inPad, rSpotY, innerW, rowStep), rightFmt);
 
-                    g.DrawString("STEER (YOU / G61)", fSmall, Brushes.Gray, new PointF(leftBox.Left + inPad, leftBox.Top + rowStep * 2 + 2 * s));
+                    // Row 4: Steer (You / Ref)
+                    int rSteerY = rTop + rowStep * 3;
+                    g.DrawString("STEER", fSmall, Brushes.Gray, new RectangleF(leftBox.Left + inPad, rSteerY, innerW * 0.40f, rowStep), leftFmt);
                     string stReadout = string.Format(CultureInfo.InvariantCulture, "{0:0}° / {1:0}°", youSteer, g61Steer);
                     using (SolidBrush eb = new SolidBrush(Color.FromArgb(216, 180, 254)))
-                        g.DrawString(stReadout, fMono, eb, new PointF(leftBox.Left + inPad, leftBox.Top + rowStep * 2 + 13 * s));
+                        g.DrawString(stReadout, fMono, eb, new RectangleF(leftBox.Left + inPad, rSteerY, innerW, rowStep), rightFmt);
 
                     DrawSpatialLookaheadGraph(g, graphBox, nowPct, trackLen, peakTarget, fSmall, s);
 
@@ -9317,7 +9526,7 @@ namespace FreeOverlay
             _frameStopwatch = Stopwatch.StartNew();
 
             _timer = new Timer();
-            _timer.Interval = 16; // ~60 FPS high-rate update matching iRacing 60 Hz telemetry
+            _timer.Interval = 11; // ~90 FPS high-rate update with sub-tick visual interpolation
             _timer.Tick += OnTimerTick;
             _timer.Start();
         }
@@ -9457,7 +9666,7 @@ namespace FreeOverlay
             if (dtSec <= 0.001 || dtSec > 0.25) dtSec = 0.01667;
 
             bool anyOverlayEnabled = _settings.StandingsEnabled || _settings.DeltaBarEnabled || _settings.Garage61Enabled || _settings.RelativeGapEnabled || _settings.RadarEnabled;
-            int targetInterval = anyOverlayEnabled ? 16 : 200;
+            int targetInterval = _settings.Garage61Enabled ? 11 : (anyOverlayEnabled ? 15 : 200);
             if (_timer.Interval != targetInterval)
             {
                 _timer.Interval = targetInterval;
@@ -9468,7 +9677,8 @@ namespace FreeOverlay
                 return;
             }
 
-            bool needStandingsRebuild = _settings.StandingsEnabled && (_tickCounter % 5 == 0);
+            int standingsStride = _settings.Garage61Enabled ? 7 : 5;
+            bool needStandingsRebuild = _settings.StandingsEnabled && (_tickCounter % standingsStride == 0);
             SessionSnapshot snap = null;
 
             if (_settings.Mode == TelemetryMode.Live || _settings.Mode == TelemetryMode.Auto)
@@ -9530,19 +9740,19 @@ namespace FreeOverlay
                 BrakingAudioCoach.StopContinuousPressure();
             }
 
-            // Repaint fast HUD overlays at 30 FPS (every 2nd tick = 32ms) while sampling telemetry & audio at 60 Hz
+            // Repaint Coaching Widget & Delta Bar on EVERY tick (~90 FPS with synchronous flush) for silky-smooth traces
+            if (_settings.Garage61Enabled && _garage61Form.Visible)
+            {
+                _garage61Form.UpdateSnapshot(snap);
+            }
+
+            if (_settings.DeltaBarEnabled && _deltaBarForm.Visible)
+            {
+                _deltaBarForm.UpdateSnapshot(snap);
+            }
+
             if (_tickCounter % 2 == 0)
             {
-                if (_settings.DeltaBarEnabled && _deltaBarForm.Visible)
-                {
-                    _deltaBarForm.UpdateSnapshot(snap);
-                }
-
-                if (_settings.Garage61Enabled && _garage61Form.Visible)
-                {
-                    _garage61Form.UpdateSnapshot(snap);
-                }
-
                 if (_settings.RelativeGapEnabled && _relativeGapForm.Visible)
                 {
                     _relativeGapForm.UpdateSnapshot(snap);
@@ -9554,8 +9764,8 @@ namespace FreeOverlay
                 }
             }
 
-            // Update Standings at ~12 Hz (every 5 ticks at 60 FPS = ~80ms) for immediate overtake updates
-            if (_settings.StandingsEnabled && _standingsForm.Visible && (_tickCounter % 5 == 0))
+            // Update Standings at ~12 Hz (~80ms) for immediate overtake updates
+            if (_settings.StandingsEnabled && _standingsForm.Visible && (_tickCounter % standingsStride == 0))
             {
                 _standingsForm.UpdateSnapshot(snap);
             }
@@ -10700,6 +10910,15 @@ namespace FreeOverlay
                     g.DrawLine(flagPen, brkSpotX, graphRect.Top + 4, brkSpotX, graphRect.Bottom - 4);
                 using (SolidBrush rb = new SolidBrush(Color.FromArgb(244, 63, 94)))
                     g.DrawString("G61 BRK", fTiny, rb, new RectangleF(brkSpotX + 3 * s, graphRect.Top + 2 * s, 60 * s, 14 * s), lf);
+
+                // Compact Gear Comparison Badge in Hub Preview
+                int prevGearW = (int)Math.Round(74 * s);
+                int prevGearH = (int)Math.Round(16 * s);
+                Rectangle prevGearR = new Rectangle(graphRect.Right - prevGearW - (int)Math.Round(4 * s), graphRect.Top + (int)Math.Round(4 * s), prevGearW, prevGearH);
+                using (SolidBrush gpb = new SolidBrush(Color.FromArgb(44, 16, 185, 129))) g.FillRectangle(gpb, prevGearR);
+                using (Pen gpp = new Pen(Color.FromArgb(175, 52, 211, 153), 1f)) g.DrawRectangle(gpp, prevGearR);
+                using (SolidBrush gpf = new SolidBrush(Color.FromArgb(110, 231, 183)))
+                    g.DrawString("G3 | REF 3", fTiny, gpf, prevGearR, cf);
 
                 // Vertical Brake & Throttle bars inside pedalsRect
                 int bBarW = (pedalsRect.Width - (int)(12 * s)) / 2;
